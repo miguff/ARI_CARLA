@@ -1,1 +1,15 @@
 /best.pt
+*.zip
+tensorboard_logs/TD3_1/events.out.tfevents.1732616558.Miguff.12524.0
+tensorboard_logs/TD3_2/events.out.tfevents.1732617223.Miguff.15900.0
+tensorboard_logs/TD3_3/events.out.tfevents.1732618322.Miguff.13908.0
+tensorboard_logs/TD3_4/events.out.tfevents.1732619439.Miguff.7276.0
+tensorboard_logs/TD3_5/events.out.tfevents.1732619914.Miguff.15388.0
+tensorboard_logs/TD3_6/events.out.tfevents.1732621040.Miguff.11324.0
+tensorboard_logs/TD3_7/events.out.tfevents.1732626401.Miguff.23528.0
+tensorboard_logs/TD3_8/events.out.tfevents.1732627846.Miguff.23612.0
+tensorboard_logs/TD3_9/events.out.tfevents.1732628835.Miguff.23704.0
+*tensorboard_logs*
+*.jpg
+*pycache*
+*.npz

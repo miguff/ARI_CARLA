@@ -69,21 +69,23 @@ class CarEnv(gymnasium.Env):
         throttle = action[0]
         brake = action[1]
 
-        print(f"Brake Value: {brake}")
-        print(f"Throttle Value: {throttle}")
         # Ensure only one of throttle or brake is applied
         if throttle >= brake:
             brake = 0.0
         else:
             throttle = 0.0
 
+
+        if brake > 0.0:
+            print("I am breaking now")
+            print(f"Distance to bicycle: {self.avg_distance}")
         
 
         self.bicycle.apply_control(carla.VehicleControl(throttle=1))
         self.vehicle.apply_control(carla.VehicleControl(throttle=float(throttle), brake=float(brake), steer = float(self.steering_angle)))
 
         self.world.tick()
-
+        self.episode_run_time += FIXED_DELTA_SECONDS
         self.movingandDetecting()
 
         next_waypoint_location = self.route[self.curr_wp][0].transform.location
@@ -109,84 +111,90 @@ class CarEnv(gymnasium.Env):
         v = self.vehicle.get_velocity()
         kmh = int(3.6 * math.sqrt(v.x**2 + v.y**2 + v.z**2))
 
-        end_time = time.time()
 
-        episode_run_time = end_time-self.episode_start
-        print(episode_run_time)
+
+        print(self.episode_run_time)
 
         reward = 0
         done = False
         terminated = False
         distance_to_goal = self.vehicle.get_transform().location.distance(self.route[-1][0].transform.location)
+        
 
         print("That is my speed: {}".format(kmh))
         #Speeding Reward
-        if 20 <= kmh <= 30:
-            reward += 50
-        elif 10 <= kmh < 20:
-            reward += 20
-        elif kmh < 10:
-            reward -= 30  # Penalize being too slow
-        elif kmh > 30:
-            reward -= 300  # Penalize speeding
+        # if 20 <= kmh <= 25:
+        #     reward += 5*kmh
+        # elif 10 <= kmh < 19:
+        #     reward += 4
+        # elif kmh < 10:
+        #     reward -= 10  # Penalize being too slow
+        # if kmh > 25:
+        #     reward -= 1000  # Penalize speeding
+
+
+        if kmh > self.previous_speed:
+            reward += 100
+            self.previous_speed = kmh
+        else:
+            reward -= 15
+
+        if kmh < 25:
+            reward += (kmh**2)/50
+        else:
+            reward -= 1000
+
+        print(f"Average distance: {self.avg_distance}")
 
         #Distance to goal reward
         progress = self.previousDistance - distance_to_goal
+        reward += 100*(progress/FIXED_DELTA_SECONDS)
         if progress > 0:
             # Progress reward increases over time, encouraging faster progress
-            progress_reward = 100 * (progress / distance_to_goal)
+            progress_reward = 100 * (progress/FIXED_DELTA_SECONDS)
         else:
             # Penalize stagnation or moving away from the goal
-            progress_reward = -50 * abs(progress)
+            progress_reward = -15 * abs(progress)
 
         #Reward reaching intermediate waypoints:
         if self.vehicle.get_transform().location.distance(self.route[self.curr_wp][0].transform.location) < 5:
-            reward += 5  # Reward for reaching waypoint
+            reward += 20  # Reward for reaching waypoint
             self.curr_wp += 1
 
-        if brake > 0.8:
+        if brake > 0.1:
             if self.safe_brake_distance > self.avg_distance > self.too_close_brake_distance:
-                reward += 15  # Proper braking
+                reward += 250  # Proper braking
             elif self.avg_distance > self.safe_brake_distance:
                 reward -= 10  # Unnecessary braking
             elif self.avg_distance < self.too_close_brake_distance:
-                reward += 5  # Failure to brake in time
+                reward += 50  # Failure to brake in time
 
         #Collision and Out-of-Bounds Penalties
         if self.collision_happened:
             reward -= 1000
             done = True
             self.cleanup()
-        if distance_to_goal > 50:
-            reward -= 200  # Strayed too far from goal
-            done = True
-            self.cleanup()
-        if episode_run_time > 40:
+        if self.episode_run_time > 40:
             done = True
             reward -= 1000
             self.cleanup()
 
         # Adjust for time: Scale progress reward by the remaining distance and time penalty
-        time_varying_reward = progress_reward - 0.1 * episode_run_time
+        time_varying_reward = progress_reward - 0.1 * self.episode_run_time
         reward += time_varying_reward
 
         #Reaching the end point            
         if self.vehicle.get_transform().location.distance(self.route[-1][0].transform.location) < 6:
             reward += 50
             done = True
-            if episode_run_time < 25:
-                reward += 10
+            if self.episode_run_time < 20:
+                reward += 30
             else:
-                reward -= 20
+                reward -= 40
             self.cleanup()
             print(f"Point of the given episode: {self.episode_point+50}")
 
-    
-        progress_reward = 200*(1/distance_to_goal)
-        time_penalty_reward = -1*episode_run_time
-        timevaryreward = progress_reward+time_penalty_reward
 
-        reward += timevaryreward
 
         # Update previous distance
         self.previousDistance = distance_to_goal
@@ -207,6 +215,7 @@ class CarEnv(gymnasium.Env):
         ], dtype=np.float32)
 
         self.episode_point += reward
+        print(f" Episode Point: {self.episode_point}")
 
         return obs, reward, done, terminated, {}
             
@@ -215,9 +224,10 @@ class CarEnv(gymnasium.Env):
         
         print(f"We are in this mode: {self.eval_mode}")
         self.episode_point = 0
-        self.episode_start = time.time()
+        self.previous_speed = 0
+        self.episode_run_time = 0
         self.seed(seed)
-        self.bicycle_speed = random.uniform(0.1, 1)
+        self.bicycle_speed = random.uniform(0.5, 1)
         self.previousDistance = 100
         self.vehicle = None
         self.bicycle = None
@@ -288,9 +298,10 @@ class CarEnv(gymnasium.Env):
         self.frontcamera2.listen(lambda image: self.camera_callback(image,self.frontcamera2_data))
         self.model = YOLO("best.pt")
 
-        self.movingandDetecting()
 
         self.world.tick()
+        self.movingandDetecting()
+
 
         v = self.vehicle.get_velocity()
         kmh = int(3.6 * math.sqrt(v.x**2 + v.y**2 + v.z**2))
@@ -304,7 +315,6 @@ class CarEnv(gymnasium.Env):
 
     def movingandDetecting(self):
 
-        self.world.tick()
 
         if self.vehicle.get_transform().location.distance(self.route[self.curr_wp][0].transform.location) < 3:
             self.curr_wp += 1
