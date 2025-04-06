@@ -1,74 +1,22 @@
-import carla
 import numpy as np
-import cv2
-import time
+import matplotlib.pyplot as plt
+from scipy.interpolate import CubicSpline
 
-# Initialize the CARLA client
-client = carla.Client('localhost', 2000)
-client.set_timeout(10.0)
+# Given data points
+x = np.array([-66.83586883544922, -63.83588409423828, -60.96198272705078, -58.527774810791016,
+              -56.34273910522461, -54.565956115722656, -53.229007720947266, -52.42738342285156,
+              -52.19707107543945, -52.186737060546875, -52.186737060546875])
 
-# Get the world
-world = client.get_world()
+y = np.array([27.998329162597656, 28.006664276123047, 28.037200927734375, 28.573915481567383,
+              29.77351951599121, 31.554716110229492, 33.781429290771484, 36.25187301635742,
+              38.89096450805664, 42.565128326416016, 42.565128326416016])
 
-# Function to spawn a vehicle
-def spawn_vehicle(blueprint, spawn_point):
-    return world.spawn_actor(blueprint, spawn_point)
+# Remove duplicate x values
+unique_indices = np.unique(x, return_index=True)[1]
+x_unique = x[unique_indices]
+y_unique = y[unique_indices]
 
-# Function to create a depth camera
-def create_depth_camera(ego_vehicle):
-    blueprint_library = world.get_blueprint_library()
-    depth_camera_bp = blueprint_library.find('sensor.camera.depth')
-    camera_transform = carla.Transform(carla.Location(x=1.5, z=1.5))  # Adjust position and orientation as needed
-    depth_camera = world.spawn_actor(depth_camera_bp, camera_transform, attach_to=ego_vehicle)
-    return depth_camera
-
-# Function to process the depth image
-def depth_callback(depth_image):
-    depth_array = np.frombuffer(depth_image.raw_data, dtype=np.dtype("uint8"))
-    depth_array = np.reshape(depth_array, (depth_image.height, depth_image.width, 4))  # RGBA
-    # Convert to meters (assuming the depth values are normalized)
-    depth_meters = depth_array[:, :, 0] / 255.0 * 100.0  # Scale depth to meters (assuming max distance is 100m)
-    return depth_meters
-
-# Main function
-def main():
-    # Get the vehicle blueprints
-    blueprint_library = world.get_blueprint_library()
-    ego_vehicle_bp = blueprint_library.find('vehicle.tesla.model3')
-    target_vehicle_bp = blueprint_library.find('vehicle.audi.a2')
-
-    # Set the spawn points
-    ego_spawn_point = carla.Transform(carla.Location(x=0, y=0, z=1))
-    target_spawn_point = carla.Transform(carla.Location(x=10, y=0, z=1))  # 10 meters in front of ego vehicle
-
-    # Spawn vehicles
-    target_vehicle = spawn_vehicle(target_vehicle_bp, target_spawn_point)
-    targetchange = carla.Transform(target_spawn_point.location + carla.Location(x=1))
-    target_vehicle.set_transform(targetchange)
-    ego_vehicle = spawn_vehicle(ego_vehicle_bp, ego_spawn_point)
-
-    
-
-    # Create the depth camera
-    depth_camera = create_depth_camera(ego_vehicle)
-
-    # Set up the callback for depth images
-    depth_camera.listen(lambda image: depth_callback(image))
-
-    # Allow some time for the camera to capture data
-    print("Starting depth measurement...")
-    time.sleep(5)  # Capture depth data for 5 seconds
-
-    # Clean up
-    depth_camera.stop()
-    ego_vehicle.destroy()
-    target_vehicle.destroy()
-    depth_camera.destroy()
-
-    # Close the client
-    print("Test complete. Closing the CARLA client.")
-    client.apply_batch([carla.command.DestroyActor(x) for x in world.get_actors().filter('sensor.camera.depth')])
-    client.apply_batch([carla.command.DestroyActor(x) for x in world.get_actors().filter('vehicle.*')])
-
-if __name__ == '__main__':
-    main()
+# Ensure x values are sorted
+sorted_indices = np.argsort(x_unique)
+x_sorted = x_unique[sorted_indices]
+y_sorted = y_unique[sorted_indices]
