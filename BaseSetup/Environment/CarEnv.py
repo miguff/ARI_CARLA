@@ -13,8 +13,8 @@ from typing import Optional
 
 class EnvironmentClass:
 
-    def __init__(self, eval_mode = None, FIXED_DELTA_SECONDS = 0.05, MAX_STEER_DEGREES = 40):
-
+    def __init__(self, eval_mode = None, FIXED_DELTA_SECONDS = 0.05, MAX_STEER_DEGREES = 40, SEED: int = 42):
+        self.seed(SEED)
         self.eval_mode = eval_mode
         self.FIXED_DELTA_SECONDS = FIXED_DELTA_SECONDS
         self.MAX_STEER_DEGREES = MAX_STEER_DEGREES
@@ -81,9 +81,30 @@ class EnvironmentClass:
         self.image_h = self.camera_bp.get_attribute('image_size_y').as_int()
 
         #return string
-        self.objectreturn = torch.tensor([0, 0, 0, 0], dtype=torch.float16)
+        self.objectreturn = torch.tensor([0, 0, 0, 0], dtype=torch.float32)
         #reward properties
         self.EPISODE_REWARD = 0
+
+        print("Env torch")
+        print(print(torch.rand(1)))
+
+        print("Python random:", random.random())
+        print("NumPy random:", np.random.rand())
+
+    def seed(self, seed):
+        self.seed_value = seed
+
+        # Seed Python's built-in random module
+        if seed is not None:
+            random.seed(seed)
+
+        # Seed numpy random generators
+        self.np_random = np.random.seed(seed)
+        
+        # If using PyTorch, seed the torch RNG too
+        if torch:
+            torch.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
 
 
     def setup_PID_controller(self, Kp = 0.3, Ki = 0.0, Kd = 0.1, integral_error = 0.0, last_error = 0.0, max_speed = 28):
@@ -148,7 +169,9 @@ class EnvironmentClass:
         self.episode_point = 0
         self.episode_run_time = 0
         self.speed = 0.0
-        self.bicycle_speed = random.uniform(0.5, 1)
+        #For now, test with this. Consant speed.
+        self.bicycle_speed = 1
+        #self.bicycle_speed = random.uniform(0.5, 1)
         self.previousDistance = 100
         self.vehicle = None
         self.bicycle = None
@@ -210,13 +233,25 @@ class EnvironmentClass:
 
         if self.avg_distance < self.USEREINFORCEMENT:
             self.give_points = True
-            if controlValues <= 0:
-                brake = controlValues*-1
-                throttle = 0
+            
+            #This is for PPO
+            # if controlValues <= 0:
+            #     brake = controlValues*-1
+            #     throttle = 0
+            # else:
+            #     brake = 0
+            #     throttle = controlValues
+
+            throttle, brake = controlValues
+            if throttle >= brake:
+                brake = 0.0  # apply only throttle
             else:
-                brake = 0
-                throttle = controlValues
-                
+                throttle = 0.0  # apply only brake
+
+            print("Brake")
+            print(brake)
+            print("Throttle")
+            print(throttle)
         else:
             self.give_points = False
             throttle, brake = self.update_control(28)
@@ -258,43 +293,45 @@ class EnvironmentClass:
         
         if self.give_points:
             if kmh >= self.previous_speed and kmh > 0:
-                reward += 2
+                reward += 5
                 self.previous_speed = kmh
             else:
                 reward -= 5
 
-            if kmh < 28:
-                reward += 5
-            else:
+            # if kmh < 28:
+            #     reward += 10
+            # else:
+            #     reward -= 100
+            if kmh > 30:
                 reward -= 100
 
         #Reward reaching intermediate waypoints:
         if self.give_points:
             if self.vehicle.get_transform().location.distance(self.route[self.curr_wp][0].transform.location) < 5:
-                reward += 5  # Reward for reaching waypoint
+                #reward += 5  # Reward for reaching waypoint
                 self.curr_wp += 1
 
-            if brake > 0.1:
+            if brake:
                 if self.SAFE_BRAKE_DISTANCE > self.avg_distance > self.TOO_CLOSE_BRAKE_DISTANCE:
                     self.goodbrake += 1
                     reward += 100  # Proper braking
                 elif self.avg_distance > self.SAFE_BRAKE_DISTANCE:
                     self.wrongbrake += 1
-                    reward -= 70  # Unnecessary braking
-                elif self.avg_distance < self.TOO_CLOSE_BRAKE_DISTANCE:
-                    self.emergencybrake += 1
-                    reward += 5  # Failure to brake in tim
-
-            if throttle > 0.1:
-                if self.SAFE_BRAKE_DISTANCE > self.avg_distance > self.TOO_CLOSE_BRAKE_DISTANCE:
-                    self.badthrottle += 1
-                    reward += -70  # Proper braking
-                elif self.avg_distance > self.SAFE_BRAKE_DISTANCE:
-                    self.goodthrottle += 1
                     reward -= 100  # Unnecessary braking
                 elif self.avg_distance < self.TOO_CLOSE_BRAKE_DISTANCE:
+                    self.emergencybrake += 1
+                    reward += 10  # Failure to brake in tim
+
+            if throttle:
+                if self.SAFE_BRAKE_DISTANCE > self.avg_distance > self.TOO_CLOSE_BRAKE_DISTANCE:
+                    self.badthrottle += 1
+                    reward -= 100  # Bad Throttle
+                elif self.avg_distance > self.SAFE_BRAKE_DISTANCE:
+                    self.goodthrottle += 1
+                    reward += 100  # Good Throttle
+                elif self.avg_distance < self.TOO_CLOSE_BRAKE_DISTANCE:
                     self.reallybadthrottle += 1
-                    reward -= 120  # Failure to brake in time
+                    reward -= 120  # Really Bad Throttle
 
 
         self.objectreturn = torch.tensor([
@@ -312,7 +349,8 @@ class EnvironmentClass:
            
         #Collision and Out-of-Bounds Penalties
         if self.collision_happened:
-                reward -= 2000
+                if self.give_points:
+                    reward -= 2000
                 done = True
                 terminated = True
                 self.EPISODE_REWARD += reward
