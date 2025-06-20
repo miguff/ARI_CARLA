@@ -16,6 +16,16 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
 
+"""
+Maybe I can go a this, that I manually simulate some environment. Like I move the car with keys (W,A,S,D) and store every input variable, my speed, distance to other cars, use sensors (Lane detection, RSS (saftey), Lidaer) and Cameras.
+And After I have some run, I can run a learing algorithm on this. 
+Need to have some second thought on that. 
+
+"""
+
+
+
+
 def main(LOGDIR = "logs", PROJECTNAME = "RL5000", RLALGORITHM = "DDGP", EPISODE = 100, VALIDATIONFREQ= 5, MODEL_DIR = "models", LearningRateA = 0.000005, LearningRateB = 0.0001):
     os.environ["PATH"] += os.pathsep + "C:\\Program Files\\Graphviz\\bin"  
 

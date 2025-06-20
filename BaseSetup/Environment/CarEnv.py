@@ -25,7 +25,8 @@ class EnvironmentClass:
 
         self.settings = self.world.get_settings()
 
-        self.settings.synchronous_mode = True
+        #self.settings.synchronous_mode = True
+        self.settings.synchronous_mode = False
         self.settings.fixed_delta_seconds = self.FIXED_DELTA_SECONDS
         self.world.apply_settings(self.settings)
 
@@ -84,6 +85,9 @@ class EnvironmentClass:
         self.objectreturn = torch.tensor([0, 0, 0, 0], dtype=torch.float32)
         #reward properties
         self.EPISODE_REWARD = 0
+
+        #view setup
+        self.spectator = self.world.get_spectator()
 
         print("Env torch")
         print(print(torch.rand(1)))
@@ -144,7 +148,62 @@ class EnvironmentClass:
 
         cv2.destroyAllWindows()
 
-    
+    def routesetup(self, route):
+        self.route = route
+        self.curr_wp = 5
+
+    def test(self):
+        point_a = self.spawn_points[55].location
+        point_b = self.spawn_points[35].location
+        blueprint_library = self.world.get_blueprint_library()
+        vehicle_bp = blueprint_library.filter('*mini*')
+        self.vehicle = self.world.spawn_actor(vehicle_bp[0], carla.Transform(point_a))
+        time.sleep(1)
+
+
+        self.EPISODE_REWARD = 0
+        self.give_points = False
+        self.speed = 0.0
+        self.collision_detector_bp = self.world.get_blueprint_library().find('sensor.other.collision')
+        self.collision_sensor = self.world.spawn_actor(
+                self.collision_detector_bp,
+                carla.Transform(),
+                attach_to=self.vehicle
+            )
+        self.collision_sensor.listen(lambda event: self.process_collision(event))
+
+        #Required Variables
+        self.curr_wp = 5
+        self.avg_distance = 20
+        self.steering_angle = 0
+        self.collision_happened = False
+        self.previous_speed = 0
+        #Setup camera image
+        self.rightcamera1 = self.world.spawn_actor(self.camera_bp,self.rightcamera1_init_trans,attach_to=self.vehicle)
+        self.rightcamera2 = self.world.spawn_actor(self.camera_bp,self.rightcamera2_init_trans,attach_to=self.vehicle)
+        self.frontcamera1 = self.world.spawn_actor(self.camera_bp,self.frontcamera1_init_trans,attach_to=self.vehicle)
+        self.frontcamera2 = self.world.spawn_actor(self.camera_bp,self.frontcamera2_init_trans,attach_to=self.vehicle)
+
+        self.rightcamera1_data = {'image': np.zeros((self.image_h,self.image_w,4), dtype=np.uint8)}
+        self.rightcamera2_data = {'image': np.zeros((self.image_h,self.image_w,4), dtype=np.uint8)}
+        self.frontcamera1_data = {'image': np.zeros((self.image_h,self.image_w,4), dtype=np.uint8)}
+        self.frontcamera2_data = {'image': np.zeros((self.image_h,self.image_w,4), dtype=np.uint8)}
+        # this actually opens a live stream from the camera
+        self.rightcamera1.listen(lambda image: self.camera_callback(image,self.rightcamera1_data))
+        self.rightcamera2.listen(lambda image: self.camera_callback(image,self.rightcamera2_data))
+        self.frontcamera1.listen(lambda image: self.camera_callback(image,self.frontcamera1_data))
+        self.frontcamera2.listen(lambda image: self.camera_callback(image,self.frontcamera2_data))
+
+        self.world.tick()
+        v = self.vehicle.get_velocity()
+        kmh = int(3.6 * math.sqrt(v.x**2 + v.y**2 + v.z**2))
+        done = False
+        terminated = False
+        next_step = 0
+        reward = 0
+
+        return [self.objectreturn, reward, done, terminated, next_step, point_a, point_b, self.vehicle]
+
     def reset(self):
 
 
@@ -229,7 +288,16 @@ class EnvironmentClass:
 
         return [self.objectreturn, reward, done, terminated, next_step]
 
-    def step(self, controlValues: Optional[int] = None):
+    def get_offset_location(self, base_location, yaw, offset):
+        """Rotates the offset based on yaw and adds it to the base location"""
+        rad = math.radians(yaw)
+        x = base_location.x + offset.x * math.cos(rad) - offset.y * math.sin(rad)
+        y = base_location.y + offset.x * math.sin(rad) + offset.y * math.cos(rad)
+        z = base_location.z + offset.z
+        return carla.Location(x=x, y=y, z=z)
+
+
+    def step(self, controlValues: Optional[int] = None, training: bool = 1):
 
         if self.avg_distance < self.USEREINFORCEMENT:
             self.give_points = True
@@ -247,17 +315,42 @@ class EnvironmentClass:
                 brake = 0.0  # apply only throttle
             else:
                 throttle = 0.0  # apply only brake
-
-            print("Brake")
-            print(brake)
             print("Throttle")
             print(throttle)
+            print("Brake")
+            print(brake)
         else:
             self.give_points = False
             throttle, brake = self.update_control(28)
-        
-        self.bicycle.apply_control(carla.VehicleControl(throttle=self.bicycle_speed))
+        if training:
+            self.bicycle.apply_control(carla.VehicleControl(throttle=self.bicycle_speed))
         self.vehicle.apply_control(carla.VehicleControl(throttle=float(throttle), brake=float(brake), steer = float(self.steering_angle)))
+
+        #for view pusposes_only
+        transform = self.vehicle.get_transform()
+        location = transform.location
+        rotation = transform.rotation
+
+        # Adjust camera position (behind and above vehicle)
+        offset = carla.Location(x=-6, z=3)
+        camera_location = self.get_offset_location(location, rotation.yaw, offset)
+
+        if not training:
+            self.spectator.set_transform(carla.Transform(camera_location, carla.Rotation(pitch=-15, yaw=rotation.yaw)))
+
+            loc = self.vehicle.get_location()
+            self.world.debug.draw_string(loc + carla.Location(z=2.5), "Ego Vehicle", draw_shadow=False,
+                            color=carla.Color(255, 255, 0), persistent_lines=False)
+            self.world.debug.draw_string(loc + carla.Location(z=2.4), f"Brake: {brake}", draw_shadow=False,
+                            color=carla.Color(255, 255, 0) , persistent_lines=False)
+            self.world.debug.draw_string(loc + carla.Location(z=2.3), f"Throttle: {throttle}", draw_shadow=False,
+                            color=carla.Color(255, 255, 0) , persistent_lines=False)
+            self.world.debug.draw_string(loc + carla.Location(z=2.2), f"Speed: {self.speed}", draw_shadow=False,
+                            color=carla.Color(255, 255, 0) , persistent_lines=False)
+
+
+
+
 
         self.world.tick()
         self.Detection()
@@ -358,20 +451,20 @@ class EnvironmentClass:
 
                 return [self.objectreturn, reward, done, terminated, next_step]
 
-
+        if training:
         #Reaching the end
-        if self.vehicle.get_transform().location.distance(self.route[-1][0].transform.location) < 6:
-            if self.give_points:
-                reward += 50
+            if self.vehicle.get_transform().location.distance(self.route[-1][0].transform.location) < 6:
+                if self.give_points:
+                    reward += 50
+                    done = True
+                    if self.episode_run_time < 8:
+                        reward += 30
+                    else:
+                        reward -= 40
                 done = True
-                if self.episode_run_time < 8:
-                    reward += 30
-                else:
-                    reward -= 40
-            done = True
-            self.cleanup()
+                self.cleanup()
 
-            return [self.objectreturn, reward, done, terminated, next_step]
+                return [self.objectreturn, reward, done, terminated, next_step]
 
 
         self.EPISODE_REWARD += reward
@@ -482,7 +575,6 @@ class EnvironmentClass:
         self.bicycles_front1 = []
         self.bicycles_front2 = []
 
-
         for result in self.results_right1:
             for box in result.boxes:
                 # Extract box coordinates and other details
@@ -551,17 +643,25 @@ class EnvironmentClass:
 
         for (left_bicycle, distance) in self.matched_bicycles_with_distances_right:
             left_x, left_y = left_bicycle
-            distance_label = f"Distance (right camera): {distance:.2f}m"
+            distance_label = f"Distance: {distance:.2f}m"
             self.distance_right = distance
             cv2.putText(self.rightframe1, distance_label, (left_x, left_y-20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
-
+        cv2.imshow('Camera2',self.rightframe1)
+        
 
         for (left_bicycle, distance) in self.matched_bicycles_with_distances_front:
             left_x, left_y = left_bicycle
             self.distance_front = distance
-            distance_label = f"Distance (front camera): {distance:.2f}m"
+            distance_label = f"Distance: {distance:.2f}m"
             cv2.putText(self.frontframe1, distance_label, (left_x, left_y-20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+        cv2.putText(self.frontframe1, f"{self.speed} km/h", (10, 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+        cv2.imshow('Camera1',self.frontframe1)
 
+        # Exit loop on 'q' key press
+        if cv2.waitKey(1) == ord('q'):
+            print("[INFO] 'q' pressed — exiting...")
+            done = True
+        
         if self.distance_front > 0 and self.distance_right > 0:
             min_distance = np.min([self.distance_front, self.distance_right])
             max_distance = np.max([self.distance_front, self.distance_right])
