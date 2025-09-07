@@ -50,6 +50,13 @@ class Lidar:
         self.range = range
         self.points_per_second = points_per_second
 
+    def sensor_callback(data, queue):
+        """
+        This simple callback just stores the data on a thread safe Python Queue
+        to be retrieved from the "main thread".
+        """
+        queue.put(data)
+
     def generate_lidar_bp(self, arg=None):
         """Generates a CARLA blueprint based on the script parameters"""
         if arg==None:
@@ -74,7 +81,7 @@ class Lidar:
         lidar_bp.set_attribute('points_per_second', str(self.points_per_second))
         return lidar_bp
     
-    def lidar_callback(self, point_cloud, point_list):
+    def lidar_callback(self, point_cloud, queue, point_list, sensor_name):
         """Prepares a point cloud with intensity
         colors ready to be consumed by Open3D"""
         data = np.copy(np.frombuffer(point_cloud.raw_data, dtype=np.dtype('f4')))
@@ -103,3 +110,5 @@ class Lidar:
 
         point_list.points = o3d.utility.Vector3dVector(points)
         point_list.colors = o3d.utility.Vector3dVector(int_color)
+        
+        queue.put((sensor_name, point_list))
