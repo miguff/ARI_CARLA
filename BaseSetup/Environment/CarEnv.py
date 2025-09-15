@@ -25,12 +25,12 @@ class EnvironmentClass:
 
         self.settings = self.world.get_settings()
 
-        #self.settings.synchronous_mode = True
-        self.settings.synchronous_mode = False
+        self.settings.synchronous_mode = True
+        #self.settings.synchronous_mode = False
         self.settings.fixed_delta_seconds = self.FIXED_DELTA_SECONDS
         self.world.apply_settings(self.settings)
 
-        self.SAFE_BRAKE_DISTANCE = 5.5
+        self.SAFE_BRAKE_DISTANCE = 8
         self.TOO_CLOSE_BRAKE_DISTANCE = 3.5
         self.spawn_points = self.world.get_map().get_spawn_points()
 
@@ -59,7 +59,7 @@ class EnvironmentClass:
         self.badthrottle = 0
         self.goodthrottle = 0
 
-        self.USEREINFORCEMENT = 7
+        self.USEREINFORCEMENT = 9
 
         #camera setup
         self.model = YOLO("best.pt")
@@ -208,12 +208,12 @@ class EnvironmentClass:
 
 
         print(f"EPISODE REWARD: {self.EPISODE_REWARD}")
-        print(f"Number of good brake in episode {self.goodbrake}")
-        print(f"Number of wrong brake in a episode {self.wrongbrake}")
-        print(f"Number of Emergency Brake in episode: {self.emergencybrake}")
-        print(f"Number of good throttle in episode {self.goodthrottle}")
-        print(f"Number of bad throttle in a episode {self.badthrottle}")
-        print(f"Number of really bad throttle in episode: {self.reallybadthrottle}")
+        # print(f"Number of good brake in episode {self.goodbrake}")
+        # print(f"Number of wrong brake in a episode {self.wrongbrake}")
+        # print(f"Number of Emergency Brake in episode: {self.emergencybrake}")
+        # print(f"Number of good throttle in episode {self.goodthrottle}")
+        # print(f"Number of bad throttle in a episode {self.badthrottle}")
+        # print(f"Number of really bad throttle in episode: {self.reallybadthrottle}")
 
         self.EPISODE_REWARD = 0
         self.goodbrake=0
@@ -321,7 +321,7 @@ class EnvironmentClass:
             print(brake)
         else:
             self.give_points = False
-            throttle, brake = self.update_control(28)
+            throttle, brake = self.update_control(self.max_speed)
         if training:
             self.bicycle.apply_control(carla.VehicleControl(throttle=self.bicycle_speed))
         self.vehicle.apply_control(carla.VehicleControl(throttle=float(throttle), brake=float(brake), steer = float(self.steering_angle)))
@@ -382,50 +382,45 @@ class EnvironmentClass:
         reward = 0
         done = False
         terminated = False
+        distance_reward = 0
 
-        
+
         if self.give_points:
-            if kmh >= self.previous_speed and kmh > 0:
-                reward += 5
-                self.previous_speed = kmh
+            time.sleep(1)
+            # --- Distance Reward ---
+            mid_point = (self.TOO_CLOSE_BRAKE_DISTANCE + self.SAFE_BRAKE_DISTANCE) / 2
+            max_dev = (self.SAFE_BRAKE_DISTANCE - self.TOO_CLOSE_BRAKE_DISTANCE) / 2
+
+            print("Average Distance")
+            print(self.avg_distance)
+
+            if self.avg_distance < self.TOO_CLOSE_BRAKE_DISTANCE:
+                # Smooth penalty for being too close (quadratic)
+                distance_reward = -((self.TOO_CLOSE_BRAKE_DISTANCE - self.avg_distance) / self.TOO_CLOSE_BRAKE_DISTANCE) ** 2
+            elif self.avg_distance > self.SAFE_BRAKE_DISTANCE:
+                # Smooth penalty for being too far
+                distance_reward = -((self.avg_distance - self.SAFE_BRAKE_DISTANCE) / self.SAFE_BRAKE_DISTANCE) ** 2
             else:
-                reward -= 5
+                # Peak reward in the middle, smoothly decreasing towards edges
+                distance_reward = 1 - ((self.avg_distance - mid_point) / max_dev) ** 2
 
-            # if kmh < 28:
-            #     reward += 10
-            # else:
-            #     reward -= 100
-            if kmh > 30:
-                reward -= 100
+            print("Distance reward")
+            print(distance_reward)
 
-        #Reward reaching intermediate waypoints:
-        if self.give_points:
-            if self.vehicle.get_transform().location.distance(self.route[self.curr_wp][0].transform.location) < 5:
-                #reward += 5  # Reward for reaching waypoint
-                self.curr_wp += 1
+            # --- Speed Reward ---
+            if self.speed > self.max_speed:
+                # Quadratic penalty for overspeed
+                speed_reward = -((self.speed - self.max_speed) / self.max_speed) ** 4
+            else:
+                # Reward scales linearly up to max speed
+                speed_reward = self.speed / self.max_speed
 
-            if brake:
-                if self.SAFE_BRAKE_DISTANCE > self.avg_distance > self.TOO_CLOSE_BRAKE_DISTANCE:
-                    self.goodbrake += 1
-                    reward += 100  # Proper braking
-                elif self.avg_distance > self.SAFE_BRAKE_DISTANCE:
-                    self.wrongbrake += 1
-                    reward -= 100  # Unnecessary braking
-                elif self.avg_distance < self.TOO_CLOSE_BRAKE_DISTANCE:
-                    self.emergencybrake += 1
-                    reward += 10  # Failure to brake in tim
-
-            if throttle:
-                if self.SAFE_BRAKE_DISTANCE > self.avg_distance > self.TOO_CLOSE_BRAKE_DISTANCE:
-                    self.badthrottle += 1
-                    reward -= 100  # Bad Throttle
-                elif self.avg_distance > self.SAFE_BRAKE_DISTANCE:
-                    self.goodthrottle += 1
-                    reward += 100  # Good Throttle
-                elif self.avg_distance < self.TOO_CLOSE_BRAKE_DISTANCE:
-                    self.reallybadthrottle += 1
-                    reward -= 120  # Really Bad Throttle
-
+            print("Speed Reward")
+            print(speed_reward)
+            # --- Combined Reward ---
+            reward = 0.2 * distance_reward + 0.8 * speed_reward
+            print("Általános reward")
+            print(reward)
 
         self.objectreturn = torch.tensor([
             self.speed,
@@ -443,7 +438,7 @@ class EnvironmentClass:
         #Collision and Out-of-Bounds Penalties
         if self.collision_happened:
                 if self.give_points:
-                    reward -= 2000
+                    reward -= 20
                 done = True
                 terminated = True
                 self.EPISODE_REWARD += reward
@@ -454,13 +449,6 @@ class EnvironmentClass:
         if training:
         #Reaching the end
             if self.vehicle.get_transform().location.distance(self.route[-1][0].transform.location) < 6:
-                if self.give_points:
-                    reward += 50
-                    done = True
-                    if self.episode_run_time < 8:
-                        reward += 30
-                    else:
-                        reward -= 40
                 done = True
                 self.cleanup()
 
@@ -577,6 +565,8 @@ class EnvironmentClass:
 
         for result in self.results_right1:
             for box in result.boxes:
+                if box.conf[0] < 0.5:
+                    continue
                 # Extract box coordinates and other details
                 x1, y1, x2, y2 = box.xyxy[0]
                 center_x = int((x1 + x2) / 2)  # x-center of the bicycle
@@ -593,6 +583,8 @@ class EnvironmentClass:
         
         for result in self.results_right2:
             for box2 in result.boxes:
+                if box2.conf[0] < 0.5:
+                    continue
                 # Extract box coordinates and other details
                 x1, y1, x2, y2 = box2.xyxy[0]
                 center_x = int((x1 + x2) / 2)
@@ -607,6 +599,8 @@ class EnvironmentClass:
         
         for result in self.results_front1:
             for box2 in result.boxes:
+                if box2.conf[0] < 0.5:
+                    continue
                 # Extract box coordinates and other details
                 x1, y1, x2, y2 = box2.xyxy[0]
                 center_x = int((x1 + x2) / 2)
@@ -621,6 +615,8 @@ class EnvironmentClass:
         
         for result in self.results_front2:
             for box2 in result.boxes:
+                if box2.conf[0] < 0.5:
+                    continue
                 # Extract box coordinates and other details
                 x1, y1, x2, y2 = box2.xyxy[0]
                 center_x = int((x1 + x2) / 2)

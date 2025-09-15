@@ -13,3 +13,5 @@ tensorboard_logs/TD3_9/events.out.tfevents.1732628835.Miguff.23704.0
 *.jpg
 *pycache*
 *.npz
+*events*
+*.pth

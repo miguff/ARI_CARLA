@@ -10,7 +10,7 @@ sys.path.append('F:\CARLA\Windows\CARLA_0.9.15\PythonAPI\carla')
 from agents.navigation.global_route_planner import GlobalRoutePlanner
 
 
-FIXED_DELTA_SECONDS = 0.2
+FIXED_DELTA_SECONDS = 0.02
 MAX_STEER_DEGREES = 40
 
 
@@ -77,7 +77,7 @@ class CarEnv(gymnasium.Env):
 
             
 
-            #self.bicycle.apply_control(carla.VehicleControl(throttle=1))
+            self.bicycle.apply_control(carla.VehicleControl(throttle=1))
             self.vehicle.apply_control(carla.VehicleControl(throttle=float(throttle), brake=float(brake), steer = float(self.steering_angle)))
 
             self.world.tick()
@@ -197,7 +197,7 @@ class CarEnv(gymnasium.Env):
             self.bicycle = None
             self.curr_wp = 2
             self.cleanup()
-            #self.bicycleorigin()
+            self.bicycleorigin()
             self.carorigin()
             self.steering_angle = 0
             self.collision_happened = False

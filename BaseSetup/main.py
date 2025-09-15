@@ -34,7 +34,7 @@ def main(LOGDIR = "logs", PROJECTNAME = "RL5000", RLALGORITHM = "DDGP", EPISODE 
     carenv = EnvironmentClass("Training", SEED=SEED)
     INPUTDIM = len(carenv.objectreturn)
     #agent = ActorCriticAgent(alpha=LearningRateA, beta = LearningRateB, input_dims=[INPUTDIM], gamma=0.9999, layer1_size=256, layer2_size=256, writer=writer, MODELSAVE=MODEL_DIR, FilenamePrefix=f"{RLALGORITHM}_{EPISODE}_{LearningRateA}_{LearningRateB}", seed=SEED)
-    agent = DDPGAgent(alpha=LearningRateA, beta = LearningRateB, input_dims=[INPUTDIM], n_actions=2, writer=writer, FilenamePrefix=f"{RLALGORITHM}_{EPISODE}_{LearningRateA}_{LearningRateB}", seed=SEED, tau=0.001)
+    agent = DDPGAgent(alpha=LearningRateA, beta = LearningRateB, input_dims=[INPUTDIM], n_actions=2, writer=writer, FilenamePrefix=f"{RLALGORITHM}_{EPISODE}_{LearningRateA}_{LearningRateB}", seed=SEED, tau=0.001, MODELSAVE=MODEL_DIR)
     Learn(agent, carenv, writer, VALIDATIONFREQ, EPISODE)
 
    
@@ -43,9 +43,9 @@ def main(LOGDIR = "logs", PROJECTNAME = "RL5000", RLALGORITHM = "DDGP", EPISODE 
 if __name__ == "__main__":
     start = time.time()
     
-    main(EPISODE=500, VALIDATIONFREQ=10, LearningRateA = 0.00025, LearningRateB = 0.0025)
-    main(EPISODE=500, VALIDATIONFREQ=10, LearningRateA = 0.0025, LearningRateB = 0.025)
-    main(EPISODE=500, VALIDATIONFREQ=10, LearningRateA = 0.000025, LearningRateB = 0.00025)
+    main(PROJECTNAME="RLNEWREWARD", EPISODE=500, VALIDATIONFREQ=10, LearningRateA = 0.0005, LearningRateB = 0.005)
+    main(PROJECTNAME="RLNEWREWARD",EPISODE=500, VALIDATIONFREQ=10, LearningRateA = 0.0025, LearningRateB = 0.025)
+    main(PROJECTNAME="RLNEWREWARD",EPISODE=500, VALIDATIONFREQ=10, LearningRateA = 0.000025, LearningRateB = 0.00025)
     end = time.time()
     elapsed = end - start
     print(f'Time taken: {elapsed:.6f} seconds')

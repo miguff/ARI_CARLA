@@ -13,7 +13,7 @@ sys.path.append('F:\CARLA\Windows\CARLA_0.9.15\PythonAPI\carla')
 from agents.navigation.global_route_planner import GlobalRoutePlanner
 
 
-FIXED_DELTA_SECONDS = 0.2
+FIXED_DELTA_SECONDS = 0.05
 MAX_STEER_DEGREES = 40
 
 class CarEnv(gymnasium.Env):
@@ -35,6 +35,9 @@ class CarEnv(gymnasium.Env):
             dtype=np.float32
         )
 
+        self.goodbrake=0
+        self.wrongbrake = 0
+        self.emergencybrake = 0
 
         
         self.client = carla.Client("localhost", 2000)
@@ -49,39 +52,69 @@ class CarEnv(gymnasium.Env):
 
         self.vehicle_bp = self.world.get_blueprint_library().filter('*mini*')
 
-        self.safe_brake_distance = 3
-        self.too_close_brake_distance = 1.5 
+        self.safe_brake_distance = 5
+        self.too_close_brake_distance = 2.5 
         self.spawn_points = self.world.get_map().get_spawn_points()
 
+        #For PID controller
+        self.Kp = 0.3
+        self.Ki = 0.0
+        self.Kd = 0.1
+        self.dt = self.settings.fixed_delta_seconds
+        self.integral_error = 0.0
+        self.last_error = 0.0
+        self.max_speed = 28
         
         
         self.step_counter = 0
+        self.episode_point = 0
 
     def cleanup(self):
-        for actor in self.world.get_actors().filter('*vehicle*'):
-            actor.destroy()
-        for sensor in self.world.get_actors().filter('*sensor*'):
-            sensor.destroy()
+        print("Cleaning up environment...")
+
+        actors_to_cleanup = [
+            getattr(self, name, None) for name in [
+                'vehicle', 'bicycle',
+                'rightcamera1', 'rightcamera2', 'frontcamera1', 'frontcamera2',
+                'collision_sensor'
+            ]
+        ]
+
+        for actor in actors_to_cleanup:
+            if actor is not None:
+                try:
+                    actor.destroy()
+                except Exception as e:
+                    print(f"Could not destroy actor: {e}")
+
+        self.rightcamera1 = None
+        self.rightcamera2 = None
+        self.frontcamera1 = None
+        self.frontcamera2 = None
+        self.collision_sensor = None
+
         cv2.destroyAllWindows()
 
     def step(self, action):
 
-        throttle = action[0]
-        brake = action[1]
 
-        # Ensure only one of throttle or brake is applied
-        if throttle >= brake:
-            brake = 0.0
+        if self.avg_distance < 6:
+            self.give_points = True
+            throttle = action[0]
+            brake = action[1]
+            # Ensure only one of throttle or brake is applied
+            if throttle >= brake:
+                brake = 0.0
+            else:
+                throttle = 0.0
         else:
-            throttle = 0.0
-
-
-        if brake > 0.0:
-            print("I am breaking now")
-            print(f"Distance to bicycle: {self.avg_distance}")
+            self.give_points = False
+            throttle, brake = self.update_control(28)
         
+          
 
-        self.bicycle.apply_control(carla.VehicleControl(throttle=1))
+        #self.bicycle.apply_control(carla.VehicleControl(throttle=1))
+        self.bicycle.apply_control(carla.VehicleControl(throttle=self.bicycle_speed))
         self.vehicle.apply_control(carla.VehicleControl(throttle=float(throttle), brake=float(brake), steer = float(self.steering_angle)))
 
         self.world.tick()
@@ -110,10 +143,10 @@ class CarEnv(gymnasium.Env):
 
         v = self.vehicle.get_velocity()
         kmh = int(3.6 * math.sqrt(v.x**2 + v.y**2 + v.z**2))
+        self.speed = kmh
 
 
-
-        print(self.episode_run_time)
+        # print(self.episode_run_time)
 
         reward = 0
         done = False
@@ -121,79 +154,44 @@ class CarEnv(gymnasium.Env):
         distance_to_goal = self.vehicle.get_transform().location.distance(self.route[-1][0].transform.location)
         
 
-        print("That is my speed: {}".format(kmh))
+        # print("That is my speed: {}".format(kmh))
         #Speeding Reward
-        # if 20 <= kmh <= 25:
-        #     reward += 5*kmh
-        # elif 10 <= kmh < 19:
-        #     reward += 4
-        # elif kmh < 10:
-        #     reward -= 10  # Penalize being too slow
-        # if kmh > 25:
-        #     reward -= 1000  # Penalize speeding
 
+        if self.give_points:
+            if kmh >= self.previous_speed and kmh > 0:
+                reward += 2
+                self.previous_speed = kmh
+            else:
+                reward -= 5
 
-        if kmh > self.previous_speed:
-            reward += 100
-            self.previous_speed = kmh
-        else:
-            reward -= 15
+            if kmh <= 28:
+                reward += 5
+            else:
+                reward -= 100
 
-        if kmh < 25:
-            reward += (kmh**2)/50
-        else:
-            reward -= 1000
-
-        print(f"Average distance: {self.avg_distance}")
-
-        #Distance to goal reward
-        progress = self.previousDistance - distance_to_goal
-        reward += 100*(progress/FIXED_DELTA_SECONDS)
-        if progress > 0:
-            # Progress reward increases over time, encouraging faster progress
-            progress_reward = 100 * (progress/FIXED_DELTA_SECONDS)
-        else:
-            # Penalize stagnation or moving away from the goal
-            progress_reward = -15 * abs(progress)
 
         #Reward reaching intermediate waypoints:
-        if self.vehicle.get_transform().location.distance(self.route[self.curr_wp][0].transform.location) < 5:
-            reward += 20  # Reward for reaching waypoint
-            self.curr_wp += 1
+        if self.give_points:
+            if self.vehicle.get_transform().location.distance(self.route[self.curr_wp][0].transform.location) < 5:
+                reward += 5  # Reward for reaching waypoint
+                self.curr_wp += 1
 
-        if brake > 0.1:
-            if self.safe_brake_distance > self.avg_distance > self.too_close_brake_distance:
-                reward += 250  # Proper braking
-            elif self.avg_distance > self.safe_brake_distance:
-                reward -= 10  # Unnecessary braking
-            elif self.avg_distance < self.too_close_brake_distance:
-                reward += 50  # Failure to brake in time
-
-        #Collision and Out-of-Bounds Penalties
-        if self.collision_happened:
-            reward -= 1000
-            done = True
-            self.cleanup()
-        if self.episode_run_time > 40:
-            done = True
-            reward -= 1000
-            self.cleanup()
-
-        # Adjust for time: Scale progress reward by the remaining distance and time penalty
-        time_varying_reward = progress_reward - 0.1 * self.episode_run_time
-        reward += time_varying_reward
-
-        #Reaching the end point            
-        if self.vehicle.get_transform().location.distance(self.route[-1][0].transform.location) < 6:
-            reward += 50
-            done = True
-            if self.episode_run_time < 20:
-                reward += 30
-            else:
-                reward -= 40
-            self.cleanup()
-            print(f"Point of the given episode: {self.episode_point+50}")
-
+            if brake > 0.1:
+                if self.safe_brake_distance > self.avg_distance > self.too_close_brake_distance:
+                    print("Brake in good time")
+                    print(brake)
+                    self.goodbrake += 1
+                    reward += 100  # Proper braking
+                elif self.avg_distance > self.safe_brake_distance:
+                    print("Brake in bad time")
+                    print(brake)
+                    self.wrongbrake += 1
+                    reward -= 70  # Unnecessary braking
+                elif self.avg_distance < self.too_close_brake_distance:
+                    print("Brake in emergency time")
+                    print(brake)
+                    self.emergencybrake += 1
+                    reward += 5  # Failure to brake in time
 
 
         # Update previous distance
@@ -214,18 +212,61 @@ class CarEnv(gymnasium.Env):
             distance_to_goal/50,
         ], dtype=np.float32)
 
+
+
+            #Collision and Out-of-Bounds Penalties
+        if self.collision_happened:
+                reward -= 2000
+                done = True
+                self.cleanup()
+                return obs, reward, done, terminated, {}
+
+
+        if self.episode_run_time > 15:
+                done = True
+                reward -= 1000
+                self.cleanup()
+                return obs, reward, done, terminated, {}
+
+
+        #Reaching the end point            
+        if self.vehicle.get_transform().location.distance(self.route[-1][0].transform.location) < 6:
+            if self.give_points:
+                reward += 50
+                done = True
+                if self.episode_run_time < 8:
+                    reward += 30
+                else:
+                    reward -= 40
+            done = True
+            self.cleanup()
+            return obs, reward, done, terminated, {}
+
         self.episode_point += reward
-        print(f" Episode Point: {self.episode_point}")
 
         return obs, reward, done, terminated, {}
             
 
     def reset(self, seed=None, options=None):
+
+
+        print(f"Number of good brake in episode {self.goodbrake}")
+        print(f"Number of wrong brake in a episode {self.wrongbrake}")
+        print(f"Number of Emergency Brake in episode: {self.emergencybrake}")
+        print(f" Episode Point: {self.episode_point}")
+
+        self.goodbrake=0
+        self.wrongbrake = 0
+        self.emergencybrake = 0
+
+
+        self.give_points = True
         
         print(f"We are in this mode: {self.eval_mode}")
         self.episode_point = 0
         self.previous_speed = 0
         self.episode_run_time = 0
+        self.speed = 0.0
         self.seed(seed)
         self.bicycle_speed = random.uniform(0.5, 1)
         self.previousDistance = 100
@@ -431,7 +472,7 @@ class CarEnv(gymnasium.Env):
         elif self.distance_right == 0 and self.distance_front > 0:
             self.avg_distance = self.distance_front
         else:
-            self.avg_distance = 20
+            self.avg_distance = 30
         self.predicted_angle = self.get_angle(self.vehicle, self.route[self.curr_wp][0])
 
 
@@ -460,7 +501,10 @@ class CarEnv(gymnasium.Env):
         self.bicycle = self.world.try_spawn_actor(self.bicycle_bp[0], self.bicycle_start_point)
         bicyclepos = carla.Transform(self.bicycle_start_point.location + carla.Location(x=-3, y=3.5))
         self.bicycle.set_transform(bicyclepos)
-
+        for _ in range(40):  # wait for half a second
+            print("Still Falling - Cyclist")
+            self.world.tick()
+            time.sleep(0.05)
         
 
     def camera_callback(self, image,data_dict):
@@ -470,6 +514,10 @@ class CarEnv(gymnasium.Env):
         self.vehicle_bp = self.world.get_blueprint_library().filter('*mini*')
         self.vehicle_start_point = self.spawn_points[94]
         self.vehicle = self.world.try_spawn_actor(self.vehicle_bp[0], self.vehicle_start_point)
+        for _ in range(40):  # wait for half a second
+            print("Still Falling - Car")
+            self.world.tick()
+            time.sleep(0.05)
     
     def process_collision(self, event):
         # Extract collision data
@@ -533,5 +581,26 @@ class CarEnv(gymnasium.Env):
                 self.matched_bicycles_with_distances.append((left_bicycle, depth))
 
         return self.matched_bicycles_with_distances
+
+    def update_control(self, desired_speed):
+        current_speed = self.speed
+        speed_error = desired_speed - current_speed
+        self.integral_error += speed_error * self.dt
+        derivative_error = (speed_error - self.last_error) / self.dt
+        self.last_error = speed_error
+
+        # PID computation
+        control_output = self.Kp * speed_error + self.Ki * self.integral_error + self.Kd * derivative_error
+
+
+        # Map control output to throttle and brake command
+        if control_output > 0:
+            throttle = min(control_output, 1.0)
+            brake = 0.0
+        else:
+            throttle = 0.0
+            brake = min(abs(control_output), 1.0)
+        
+        return throttle, brake
 
     

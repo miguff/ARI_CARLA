@@ -12,7 +12,7 @@ from datetime import datetime
 class DDPGAgent():
     def __init__(self, alpha, beta, input_dims, tau, n_actions, gamma=0.99,
                  max_size=100, fc1_dims=400, fc2_dims=300, 
-                 batch_size=64, writer: Optional[SummaryWriter] = None, seed: int = 42, FilenamePrefix: Optional[str] = None):
+                 batch_size=64, writer: Optional[SummaryWriter] = None, seed: int = 42, FilenamePrefix: Optional[str] = None, MODELSAVE: Optional[str] = None):
         
         """
         Initialize the DDPG agent.
@@ -38,6 +38,7 @@ class DDPGAgent():
         self.writer = writer
         self.Filenameprefix = FilenamePrefix
         self.seed(seed)
+        self.MODELSAVE = MODELSAVE
 
         self.memory = ReplayBuffer(max_size, input_dims, n_actions)
 
@@ -105,6 +106,15 @@ class DDPGAgent():
         """
         Save the weights of all the networks to disk.
         """
+        actor_path = os.path.join(self.MODELSAVE, f'./{self.Filenameprefix}_actor_{datetime.now().strftime("%Y%m%d-%H%M%S")}_{reward}.pth')
+        critic_path = os.path.join(self.MODELSAVE, f'./{self.Filenameprefix}_critic_{datetime.now().strftime("%Y%m%d-%H%M%S")}_{reward}.pth')
+        T.save(self.actor.state_dict(), actor_path)
+        T.save(self.critic.state_dict(), critic_path)
+        target_actor_path = os.path.join(self.MODELSAVE, f'./{self.Filenameprefix}_target_actor_{datetime.now().strftime("%Y%m%d-%H%M%S")}_{reward}.pth')
+        target_critic_path = os.path.join(self.MODELSAVE, f'./{self.Filenameprefix}_target_critic_{datetime.now().strftime("%Y%m%d-%H%M%S")}_{reward}.pth')
+        T.save(self.target_actor.state_dict(), target_actor_path)
+        T.save(self.target_critic.state_dict(), target_critic_path)
+
         self.actor.save_checkpoint()
         self.target_actor.save_checkpoint()
         self.critic.save_checkpoint()
@@ -142,11 +152,6 @@ class DDPGAgent():
         rewards = T.tensor(rewards, dtype=T.float).to(self.actor.device)
         done = T.tensor(done).to(self.actor.device)
 
-
-        print(states)
-        print(actions)
-        print(states_)
-        print(rewards)
 
         # Compute target actions from target actor network for next states
         target_actions = self.target_actor.forward(states_) #Here we choose another action, that is in the future value
