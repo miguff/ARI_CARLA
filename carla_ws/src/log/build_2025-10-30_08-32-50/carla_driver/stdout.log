@@ -1,0 +1,45 @@
+running egg_info
+creating ../build/carla_driver/carla_driver.egg-info
+writing ../build/carla_driver/carla_driver.egg-info/PKG-INFO
+writing dependency_links to ../build/carla_driver/carla_driver.egg-info/dependency_links.txt
+writing entry points to ../build/carla_driver/carla_driver.egg-info/entry_points.txt
+writing requirements to ../build/carla_driver/carla_driver.egg-info/requires.txt
+writing top-level names to ../build/carla_driver/carla_driver.egg-info/top_level.txt
+writing manifest file '../build/carla_driver/carla_driver.egg-info/SOURCES.txt'
+reading manifest file '../build/carla_driver/carla_driver.egg-info/SOURCES.txt'
+writing manifest file '../build/carla_driver/carla_driver.egg-info/SOURCES.txt'
+running build
+running build_py
+creating /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/build/carla_driver/build
+creating /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/build/carla_driver/build/lib
+creating /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/build/carla_driver/build/lib/carla_driver
+copying carla_driver/__init__.py -> /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/build/carla_driver/build/lib/carla_driver
+copying carla_driver/carla_other_vehicles.py -> /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/build/carla_driver/build/lib/carla_driver
+copying carla_driver/test_files.py -> /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/build/carla_driver/build/lib/carla_driver
+copying carla_driver/carla_client_node.py -> /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/build/carla_driver/build/lib/carla_driver
+running install
+running install_lib
+creating /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/install/carla_driver/lib/python3.10/site-packages/carla_driver
+copying /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/build/carla_driver/build/lib/carla_driver/__init__.py -> /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/install/carla_driver/lib/python3.10/site-packages/carla_driver
+copying /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/build/carla_driver/build/lib/carla_driver/carla_other_vehicles.py -> /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/install/carla_driver/lib/python3.10/site-packages/carla_driver
+copying /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/build/carla_driver/build/lib/carla_driver/test_files.py -> /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/install/carla_driver/lib/python3.10/site-packages/carla_driver
+copying /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/build/carla_driver/build/lib/carla_driver/carla_client_node.py -> /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/install/carla_driver/lib/python3.10/site-packages/carla_driver
+byte-compiling /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/install/carla_driver/lib/python3.10/site-packages/carla_driver/__init__.py to __init__.cpython-310.pyc
+byte-compiling /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/install/carla_driver/lib/python3.10/site-packages/carla_driver/carla_other_vehicles.py to carla_other_vehicles.cpython-310.pyc
+byte-compiling /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/install/carla_driver/lib/python3.10/site-packages/carla_driver/test_files.py to test_files.cpython-310.pyc
+byte-compiling /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/install/carla_driver/lib/python3.10/site-packages/carla_driver/carla_client_node.py to carla_client_node.cpython-310.pyc
+running install_data
+creating /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/install/carla_driver/share/ament_index
+creating /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/install/carla_driver/share/ament_index/resource_index
+creating /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/install/carla_driver/share/ament_index/resource_index/packages
+copying resource/carla_driver -> /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/install/carla_driver/share/ament_index/resource_index/packages
+copying package.xml -> /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/install/carla_driver/share/carla_driver
+creating /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/install/carla_driver/share/carla_driver/launch
+copying launch/script_launch.py -> /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/install/carla_driver/share/carla_driver/launch
+running install_egg_info
+Copying ../build/carla_driver/carla_driver.egg-info to /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/install/carla_driver/lib/python3.10/site-packages/carla_driver-0.0.0-py3.10.egg-info
+running install_scripts
+Installing carla_client_node script to /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/install/carla_driver/lib/carla_driver
+Installing carla_other_vehicles script to /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/install/carla_driver/lib/carla_driver
+Installing test_client script to /home/master/Documents/Programming/ARI_CARLA/carla_ws/src/install/carla_driver/lib/carla_driver
+writing list of installed files to '/home/master/Documents/Programming/ARI_CARLA/carla_ws/src/build/carla_driver/install.log'

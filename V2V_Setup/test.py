@@ -9,9 +9,6 @@ from ultralytics import YOLO
 import numpy as np
 import supervision as sv
 
-print(sv.__version__)
-exit()
-
 
 DELTA = 0.05
 
