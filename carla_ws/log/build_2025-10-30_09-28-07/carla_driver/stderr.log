@@ -1,0 +1,3 @@
+warning: install_data: setup script did not provide a directory for 'share/carla_driver/Utils' -- installing right in '/home/master/Documents/Programming/ARI_CARLA/carla_ws/install/carla_driver'
+
+error: can't copy 'share/carla_driver/Utils': doesn't exist or not a regular file

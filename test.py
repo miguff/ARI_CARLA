@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.interpolate import CubicSpline
+import carla
 
 # Given data points
 x = np.array([-66.83586883544922, -63.83588409423828, -60.96198272705078, -58.527774810791016,

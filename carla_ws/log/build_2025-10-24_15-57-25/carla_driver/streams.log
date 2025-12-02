@@ -1,0 +1,25 @@
+[0.552s] Invoking command in '/home/master/Documents/Programming/ARI_CARLA/carla_ws/src/carla_driver': PYTHONPATH=/home/master/Documents/Programming/ARI_CARLA/carla_ws/build/carla_driver/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/master/Documents/Programming/ARI_CARLA/carla_ws/install/carla_driver/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/carla_driver build --build-base /home/master/Documents/Programming/ARI_CARLA/carla_ws/build/carla_driver/build install --record /home/master/Documents/Programming/ARI_CARLA/carla_ws/build/carla_driver/install.log --single-version-externally-managed install_data
+[0.777s] running egg_info
+[0.777s] writing ../../build/carla_driver/carla_driver.egg-info/PKG-INFO
+[0.777s] writing dependency_links to ../../build/carla_driver/carla_driver.egg-info/dependency_links.txt
+[0.778s] writing entry points to ../../build/carla_driver/carla_driver.egg-info/entry_points.txt
+[0.778s] writing requirements to ../../build/carla_driver/carla_driver.egg-info/requires.txt
+[0.778s] writing top-level names to ../../build/carla_driver/carla_driver.egg-info/top_level.txt
+[0.779s] reading manifest file '../../build/carla_driver/carla_driver.egg-info/SOURCES.txt'
+[0.780s] writing manifest file '../../build/carla_driver/carla_driver.egg-info/SOURCES.txt'
+[0.781s] running build
+[0.781s] running build_py
+[0.781s] copying carla_driver/carla_client_node.py -> /home/master/Documents/Programming/ARI_CARLA/carla_ws/build/carla_driver/build/lib/carla_driver
+[0.781s] running install
+[0.781s] running install_lib
+[0.782s] copying /home/master/Documents/Programming/ARI_CARLA/carla_ws/build/carla_driver/build/lib/carla_driver/carla_client_node.py -> /home/master/Documents/Programming/ARI_CARLA/carla_ws/install/carla_driver/lib/python3.10/site-packages/carla_driver
+[0.783s] byte-compiling /home/master/Documents/Programming/ARI_CARLA/carla_ws/install/carla_driver/lib/python3.10/site-packages/carla_driver/carla_client_node.py to carla_client_node.cpython-310.pyc
+[0.783s] running install_data
+[0.784s] running install_egg_info
+[0.785s] removing '/home/master/Documents/Programming/ARI_CARLA/carla_ws/install/carla_driver/lib/python3.10/site-packages/carla_driver-0.0.0-py3.10.egg-info' (and everything under it)
+[0.785s] Copying ../../build/carla_driver/carla_driver.egg-info to /home/master/Documents/Programming/ARI_CARLA/carla_ws/install/carla_driver/lib/python3.10/site-packages/carla_driver-0.0.0-py3.10.egg-info
+[0.786s] running install_scripts
+[0.804s] Installing carla_client_node script to /home/master/Documents/Programming/ARI_CARLA/carla_ws/install/carla_driver/lib/carla_driver
+[0.804s] Installing carla_other_vehicles script to /home/master/Documents/Programming/ARI_CARLA/carla_ws/install/carla_driver/lib/carla_driver
+[0.804s] writing list of installed files to '/home/master/Documents/Programming/ARI_CARLA/carla_ws/build/carla_driver/install.log'
+[0.823s] Invoked command in '/home/master/Documents/Programming/ARI_CARLA/carla_ws/src/carla_driver' returned '0': PYTHONPATH=/home/master/Documents/Programming/ARI_CARLA/carla_ws/build/carla_driver/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/master/Documents/Programming/ARI_CARLA/carla_ws/install/carla_driver/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/carla_driver build --build-base /home/master/Documents/Programming/ARI_CARLA/carla_ws/build/carla_driver/build install --record /home/master/Documents/Programming/ARI_CARLA/carla_ws/build/carla_driver/install.log --single-version-externally-managed install_data

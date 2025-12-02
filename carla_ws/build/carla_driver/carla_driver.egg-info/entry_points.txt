@@ -1,0 +1,5 @@
+[console_scripts]
+carla_client_node = carla_driver.carla_client_node:main
+carla_other_vehicles = carla_driver.carla_other_vehicles:main
+test_client = carla_driver.test_files:main
+

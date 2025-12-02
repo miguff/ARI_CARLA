@@ -3,13 +3,12 @@ from Vehicles import CustomVehicle
 from Utils import Lidar
 import time
 import open3d as o3d
-from queue import Queue
-from queue import Empty
 import cv2
 import traceback
 from ultralytics import YOLO
 import numpy as np
 import supervision as sv
+
 
 DELTA = 0.05
 

@@ -41,6 +41,8 @@ class EnvironmentClass:
 
         self.settings.synchronous_mode = True
         #self.settings.synchronous_mode = False
+        self.settings.synchronous_mode = True
+        #self.settings.synchronous_mode = False
         self.settings.fixed_delta_seconds = self.FIXED_DELTA_SECONDS
         self.world.apply_settings(self.settings)
 
@@ -76,7 +78,7 @@ class EnvironmentClass:
         self.brake_number = 0
         self.throttle_number = 0
 
-        self.USEREINFORCEMENT = 7
+        self.USEREINFORCEMENT = 9
 
         #camera setup
         self.model = YOLO("best.pt")
@@ -332,7 +334,7 @@ class EnvironmentClass:
                 
         else:
             self.give_points = False
-            throttle, brake = self.update_control(28)
+            throttle, brake = self.update_control(self.max_speed)
         if training:
             self.bicycle.apply_control(carla.VehicleControl(throttle=self.bicycle_speed))
         self.vehicle.apply_control(carla.VehicleControl(throttle=float(throttle), brake=float(brake), steer = float(self.steering_angle)))
@@ -393,6 +395,7 @@ class EnvironmentClass:
         reward = 0
         done = False
         terminated = False
+        distance_reward = 0
 
         #// New Rewrd system
         print("Average distance")
@@ -610,6 +613,8 @@ class EnvironmentClass:
 
         for result in self.results_right1:
             for box in result.boxes:
+                if box.conf[0] < 0.5:
+                    continue
                 # Extract box coordinates and other details
                 x1, y1, x2, y2 = box.xyxy[0]
                 center_x = int((x1 + x2) / 2)  # x-center of the bicycle
@@ -626,6 +631,8 @@ class EnvironmentClass:
         
         for result in self.results_right2:
             for box2 in result.boxes:
+                if box2.conf[0] < 0.5:
+                    continue
                 # Extract box coordinates and other details
                 x1, y1, x2, y2 = box2.xyxy[0]
                 center_x = int((x1 + x2) / 2)
@@ -640,6 +647,8 @@ class EnvironmentClass:
         
         for result in self.results_front1:
             for box2 in result.boxes:
+                if box2.conf[0] < 0.5:
+                    continue
                 # Extract box coordinates and other details
                 x1, y1, x2, y2 = box2.xyxy[0]
                 center_x = int((x1 + x2) / 2)
@@ -654,6 +663,8 @@ class EnvironmentClass:
         
         for result in self.results_front2:
             for box2 in result.boxes:
+                if box2.conf[0] < 0.5:
+                    continue
                 # Extract box coordinates and other details
                 x1, y1, x2, y2 = box2.xyxy[0]
                 center_x = int((x1 + x2) / 2)
