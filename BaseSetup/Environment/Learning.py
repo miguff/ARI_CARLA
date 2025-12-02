@@ -1,11 +1,13 @@
 
-from RLAlgorithm import ActorCriticAgent, DDPGAgent
+from RLAlgorithm import ActorCriticAgent, DDPGAgent, PPOAgent
 from Environment import EnvironmentClass
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 
 
-def Learn(agent: DDPGAgent, carenv: EnvironmentClass, writer: SummaryWriter, VALIDATIONFREQ=5, EPISODE=100, ):
+def Learn(agent: ActorCriticAgent, carenv: EnvironmentClass, writer: SummaryWriter, VALIDATIONFREQ=5, EPISODE=100, ):
+
+    hidden = None
 
     EPISODE = EPISODE
     REWARDS = []
@@ -34,7 +36,7 @@ def Learn(agent: DDPGAgent, carenv: EnvironmentClass, writer: SummaryWriter, VAL
             if next_step == 1:
                 action = agent.choose_action(objectssata)
                 BASE = False
-                returnvalues = carenv.step(action)
+                returalues = carenv.step(action)
             else:
                 BASE = True
                 returnvalues = carenv.step()
@@ -53,14 +55,10 @@ def Learn(agent: DDPGAgent, carenv: EnvironmentClass, writer: SummaryWriter, VAL
 
             if episode % VALIDATIONFREQ == 0 and episode != 0:
                 writer.add_scalar("Validation Step Reward", reward, VALIDATION_STEP)
+                agent.learn(objectssata, action, reward, objectssata_, done, TRAINING_STEP, Train = 0)
                 VALIDATION_STEP += 1
             else:
-                print("Action")
-                print(action)
-                agent.learn(objectssata, action, reward, objectssata_, done, TRAINING_STEP)
-                print("Írom bele az értékeket")
-                print(reward)
-                print(TRAINING_STEP)
+                agent.learn(objectssata, action, reward, objectssata_, done, TRAINING_STEP, Train = 1)
                 writer.add_scalar("Training Step Reward", reward, TRAINING_STEP)
                 TRAINING_STEP += 1
             writer.flush()
@@ -69,8 +67,9 @@ def Learn(agent: DDPGAgent, carenv: EnvironmentClass, writer: SummaryWriter, VAL
 
             if done == True:
                 REACHED_GOAL = True
+                agent.reset_hidden()
             
-        print(f"Episode {episode}, Reward: {EPISODE_TOTAL_REWARD:.2f}")
+        #print(f"Episode {episode}, Reward: {EPISODE_TOTAL_REWARD:.2f}")
         if episode % VALIDATIONFREQ == 0 and episode != 0:
             writer.add_scalar("Validation Episode Reward", EPISODE_TOTAL_REWARD, episode)
             agent.save_models(str(EPISODE_TOTAL_REWARD))

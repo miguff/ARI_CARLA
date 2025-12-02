@@ -38,6 +38,8 @@ class DDPGAgent():
         self.writer = writer
         self.Filenameprefix = FilenamePrefix
         self.seed(seed)
+        self.n_actions = n_actions
+        self.input_dims = input_dims
 
         self.memory = ReplayBuffer(max_size, input_dims, n_actions)
 
@@ -80,7 +82,7 @@ class DDPGAgent():
 
         self.actor.eval()
         state = T.tensor(observation, dtype=T.float).to(self.actor.device)
-        mu = self.actor.forward(state).to(self.actor.device)
+        mu = self.actor.forward(state)
         # Add exploration noise sampled from OU noise process
         mu_prime = mu + T.tensor(self.noise(), 
                                     dtype=T.float).to(self.actor.device)
@@ -100,7 +102,6 @@ class DDPGAgent():
         - done: boolean indicating if episode ended
         """
         self.memory.store_transition(state, action, reward, state_, done)
-        print(f"Number of element in: {self.memory.mem_cntr}")
     def save_models(self, reward: str):
         """
         Save the weights of all the networks to disk.
@@ -119,7 +120,7 @@ class DDPGAgent():
         self.critic.load_checkpoint()
         self.target_critic.load_checkpoint()
 
-    def learn(self, observation, action, reward, observation_, done, timestamp):
+    def learn(self, observation, action, reward, observation_, done, timestamp, Train):
         """
         Sample a batch of experiences from memory and update networks.
 
@@ -132,7 +133,6 @@ class DDPGAgent():
 
         if self.memory.mem_cntr < self.batch_size:
             return
-        print("Now I am learning")
         states, actions, rewards, states_, done = \
                 self.memory.sample_buffer(self.batch_size)
 
@@ -141,12 +141,6 @@ class DDPGAgent():
         actions = T.tensor(actions, dtype=T.float).to(self.actor.device)
         rewards = T.tensor(rewards, dtype=T.float).to(self.actor.device)
         done = T.tensor(done).to(self.actor.device)
-
-
-        print(states)
-        print(actions)
-        print(states_)
-        print(rewards)
 
         # Compute target actions from target actor network for next states
         target_actions = self.target_actor.forward(states_) #Here we choose another action, that is in the future value
@@ -223,3 +217,56 @@ class DDPGAgent():
 
         self.target_critic.load_state_dict(critic_state_dict)
         self.target_actor.load_state_dict(actor_state_dict)
+
+    
+    def export_to_onnx(self,
+                       actor_path: str = "actor.onnx",
+                       critic_path: str = "critic.onnx",
+                       opset_version: int = 11):
+        """
+        Export actor and critic networks to ONNX format so they can be
+        visualized in Netron.
+        """
+
+        # === Export ACTOR ===
+        self.actor.eval()
+        # create a dummy input: batch_size = 1
+        dummy_state = T.randn(1, *self.input_dims, device=self.actor.device)
+
+        T.onnx.export(
+            self.actor,                    # model
+            dummy_state,                   # example input
+            actor_path,                    # output file
+            export_params=True,
+            opset_version=opset_version,
+            do_constant_folding=True,
+            input_names=["state"],
+            output_names=["action"],
+            dynamic_axes={
+                "state": {0: "batch_size"},
+                "action": {0: "batch_size"},
+            },
+        )
+        print(f"Actor exported to {actor_path}")
+
+        # === Export CRITIC ===
+        self.critic.eval()
+        dummy_action = T.randn(1, self.n_actions, device=self.critic.device)
+
+        # critic takes (state, action) as input
+        T.onnx.export(
+            self.critic,                         # model
+            (dummy_state, dummy_action),         # tuple of inputs
+            critic_path,                         # output file
+            export_params=True,
+            opset_version=opset_version,
+            do_constant_folding=True,
+            input_names=["state", "action"],
+            output_names=["q_value"],
+            dynamic_axes={
+                "state": {0: "batch_size"},
+                "action": {0: "batch_size"},
+                "q_value": {0: "batch_size"},
+            },
+        )
+        print(f"Critic exported to {critic_path}")
