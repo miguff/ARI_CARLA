@@ -41,9 +41,8 @@ def main(LOGDIR = "logs", PROJECTNAME = "TDK_TESZT", RLALGORITHM = "DDPG", EPISO
     elif RLALGORITHM == "ActorCritic":
         agent = ActorCriticAgent(alpha=LearningRateA, beta = LearningRateB, input_dims=[INPUTDIM], gamma=0.9999, layer1_size=256, layer2_size=256, writer=writer, MODELSAVE=MODEL_DIR, FilenamePrefix=f"{RLALGORITHM}_{EPISODE}_{LearningRateA}_{LearningRateB}", seed=SEED)
 
-    agent.export_to_onnx()
 
-    #Learn(agent, carenv, writer, VALIDATIONFREQ, EPISODE)
+    Learn(agent, carenv, writer, VALIDATIONFREQ, EPISODE)
 
    
 
@@ -53,11 +52,10 @@ if __name__ == "__main__":
     
     # #main(EPISODE=400, VALIDATIONFREQ=10, RLALGORITHM="DDPG", PROJECTNAME="TESZTING_DDPG")
     # #main(EPISODE=400, VALIDATIONFREQ=10, RLALGORITHM="DDPG", PROJECTNAME="TESZTING_DDPG", LearningRateA = 0.00003, LearningRateB = 0.0001)
-    # #main(EPISODE=400, VALIDATIONFREQ=10, RLALGORITHM="PPO", PROJECTNAME="TESZTING_PPO", LearningRateA = 0.003, LearningRateB = 0.01)
+    main(EPISODE=260, VALIDATIONFREQ=10, RLALGORITHM="PPO", PROJECTNAME="TDK_FINAL", LearningRateA = 0.0003, LearningRateB = 0.001)
     # main(EPISODE=400, VALIDATIONFREQ=10, RLALGORITHM="ActorCritic", PROJECTNAME="TESZTING_ACTORCRITIC")
     # #main(EPISODE=400, VALIDATIONFREQ=10, RLALGORITHM="ActorCritic", PROJECTNAME="TESZTING_ACTORCRITIC", LearningRateA = 0.003, LearningRateB = 0.01)
     # #main(EPISODE=400, VALIDATIONFREQ=10, RLALGORITHM="ActorCritic", PROJECTNAME="TESZTING_ACTORCRITIC", LearningRateA = 0.003, LearningRateB = 0.01)
-    main()
     
     
     

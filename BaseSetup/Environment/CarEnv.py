@@ -322,7 +322,9 @@ class EnvironmentClass:
             if self.model_type == "PPO":
                 throttle = F.relu(T.tensor(controlValues))
                 brake    = F.relu(T.tensor(-controlValues))
-            
+                print("Brake and throttle")
+                print(brake)
+                print(throttle)
             elif self.model_type == 'ActorCritic':
                 throttle = F.relu(T.tensor(controlValues))
                 brake    = F.relu(T.tensor(-controlValues))
