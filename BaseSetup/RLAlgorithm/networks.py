@@ -73,7 +73,7 @@ class CriticNetwork(nn.Module):
         self.optimizer = optim.Adam(self.parameters(), lr=beta,
                                     weight_decay=0.01)
         
-        self.device = T.device('cpu')
+        self.device = device
 
         self.to(self.device)
 
@@ -221,7 +221,7 @@ class ActorNetwork(nn.Module):
         self.mu.bias.data.uniform_(-f3, f3)
 
         self.optimizer = optim.Adam(self.parameters(), lr=alpha)
-        self.device = T.device('cpu')
+        self.device = device
 
         self.to(self.device)
 
@@ -250,7 +250,6 @@ class ActorNetwork(nn.Module):
         #x = T.tanh(self.mu(x))
         x = T.tanh(self.mu(x))
         return x
-        return x.detach().cpu().item()
 
     def save_checkpoint(self):
         """
@@ -337,8 +336,8 @@ class ActorNetworkPPO(nn.Module):
     def forward(self, state):
         x = self.actor(state)
 
-        alpha = F.softplus(self.alpha_head(x)) + 1e-5
-        beta = F.softplus(self.beta_head(x)) + 1e-5
+        alpha = F.softplus(self.alpha_head(x)) + 1.0
+        beta = F.softplus(self.beta_head(x)) + 1.0
 
         return alpha, beta
     
@@ -354,25 +353,32 @@ class ActorNetworkPPO(nn.Module):
     
     def act(self, state):
         dist = self.get_dist(state)
-        action = dist.sample()
-        logprob = dist.log_prob(action).sum(-1)
-        #return action.squeeze(0).detach().numpy(), logprob.item()
-        return action, logprob
-    
+        # The policy is a Beta distribution on [0, 1].  We map the sample to a
+        # signed action in [-1, 1] so the environment can split it into
+        # throttle (positive) and brake (negative).
+        x = dist.sample()
+        logprob = dist.log_prob(x).sum()
+        action = 2 * x - 1
+        return action.squeeze(0), logprob
+
     def evaluate_actions(self, states, actions):
         """
         Used during PPO update to compute logprobs and entropy for given batch.
         states: (batch, state_dim)
-        actions: (batch, action_dim)
+        actions: (batch, action_dim), in the agent's [-1, 1] action space
         """
         if not isinstance(states, T.Tensor):
             states = T.tensor(states, dtype=T.float32, device=device)
         if not isinstance(actions, T.Tensor):
             actions = T.tensor(actions, dtype=T.float32, device=device)
+        if actions.dim() == 1:
+            actions = actions.unsqueeze(0)
 
-        dist = self.get_dist(states)  # Beta over each action dim
-        logprobs = dist.log_prob(actions).sum(-1)  # (batch,)
-        entropy = dist.entropy().sum(-1)           # (batch,)
+        # The learned distribution is on [0, 1]; map the stored action back.
+        x = (actions + 1) / 2
+        dist = self.get_dist(states)
+        logprobs = dist.log_prob(x).sum(-1)  # (batch,)
+        entropy = dist.entropy().sum(-1)     # (batch,)
         return logprobs, entropy
 
 

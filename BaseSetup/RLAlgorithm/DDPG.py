@@ -69,9 +69,10 @@ class DDPGAgent():
             T.manual_seed(seed)
             T.cuda.manual_seed_all(seed)
 
-    def choose_action(self, observation):
+    def choose_action(self, observation, store=True):
         """
         Select an action for the given state, adding noise for exploration.
+        The `store` flag is ignored; it is kept for API compatibility with PPO.
 
         Parameters:
         - observation: current state of the environment
@@ -84,11 +85,14 @@ class DDPGAgent():
         state = T.tensor(observation, dtype=T.float).to(self.actor.device)
         mu = self.actor.forward(state)
         # Add exploration noise sampled from OU noise process
-        mu_prime = mu + T.tensor(self.noise(), 
+        mu_prime = mu + T.tensor(self.noise(),
                                     dtype=T.float).to(self.actor.device)
         self.actor.train()
         # Return the noisy action as a numpy array
         return mu_prime.cpu().detach().numpy()
+
+    def reset_hidden(self):
+        pass
     
     def remember(self, state, action, reward, state_, done):
         """
@@ -129,6 +133,9 @@ class DDPGAgent():
         - Update actor using policy gradient to maximize expected Q-value
         - Soft update the target networks
         """
+        if not Train:
+            return
+
         self.remember(observation, action, reward, observation_, done)
 
         if self.memory.mem_cntr < self.batch_size:

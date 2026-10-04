@@ -22,3 +22,5 @@ tensorboard_logs/TD3_9/events.out.tfevents.1732628835.Miguff.23704.0
 *.png
 *.csv
 *.yaml
+*.pkl
+*.log

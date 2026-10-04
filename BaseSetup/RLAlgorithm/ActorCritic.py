@@ -143,7 +143,7 @@ class ActorCriticAgent(object):
         if T.cuda.is_available():
             T.cuda.manual_seed_all(seed)
 
-    def choose_action(self, observation):
+    def choose_action(self, observation, store=True):
         # Expect observation as np.array or tensor shape (input_dims,)
         if not isinstance(observation, T.Tensor):
             observation = T.tensor(observation, dtype=T.float32)

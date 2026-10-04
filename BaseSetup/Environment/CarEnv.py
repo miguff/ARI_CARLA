@@ -2,9 +2,33 @@ import carla
 import random
 import time
 import sys
-sys.path.append('F:\CARLA\Windows\CARLA_0.9.15\PythonAPI\carla')
-sys.path.append(r"C:\Users\local_user\Documents\Programozás\SelfDrivingCar\CarlaRun\PythonAPI\carla")
-from agents.navigation.global_route_planner import GlobalRoutePlanner
+import os
+
+# Try to locate the CARLA route planner.  Fall back to common install paths
+# or the CARLA_ROOT environment variable if it is not on PYTHONPATH.
+try:
+    from agents.navigation.global_route_planner import GlobalRoutePlanner
+except ModuleNotFoundError:
+    carla_root = os.environ.get('CARLA_ROOT', '')
+    candidates = [
+        carla_root,
+        os.path.join(carla_root, 'PythonAPI', 'carla'),
+        '/opt/carla/PythonAPI/carla',
+        os.path.expanduser('~/CARLA_0.9.15/PythonAPI/carla'),
+    ]
+    found = False
+    for p in candidates:
+        if p and os.path.isdir(p) and p not in sys.path:
+            sys.path.append(p)
+            if os.path.isdir(os.path.join(p, 'agents')):
+                found = True
+    if not found:
+        raise RuntimeError(
+            "Could not find CARLA's 'agents' package. "
+            "Set CARLA_ROOT or add the CARLA PythonAPI to PYTHONPATH."
+        )
+    from agents.navigation.global_route_planner import GlobalRoutePlanner
+
 import numpy as np
 import math
 from ultralytics import YOLO
@@ -14,135 +38,125 @@ from typing import Optional
 import torch.nn.functional as F
 import torch as T
 
-class EnvironmentClass:
 
-    def __init__(self, eval_mode = None, FIXED_DELTA_SECONDS = 0.05, MAX_STEER_DEGREES = 40, SEED: int = 42,
-                 Brake_wide: int = 25, safe_brake_distance: float = 6, throttle_times: float = 30, throttlehelper: float = 160, throttle_helper_2: float = 2,
-                 omega: float = 0.85, max_speed: int = 28, model_type: float = "PPO"):
+class EnvironmentClass:
+    """CARLA environment for longitudinal RL control with a cyclist ahead.
+
+    Design:
+      - The RL agent controls throttle/brake for the *entire* episode.
+      - Steering is handled by a waypoint-following controller (not learned).
+      - The cyclist speed is randomised per episode.
+      - Distance to the cyclist is estimated either from stereo vision
+        (default) or from CARLA ground truth (``use_gt_distance=True``),
+        the latter serving as an upper-bound ablation baseline.
+    """
+
+    def __init__(self, eval_mode=None, FIXED_DELTA_SECONDS=0.05,
+                 MAX_STEER_DEGREES=40, SEED: int = 42,
+                 safe_brake_distance: float = 6.0,
+                 max_speed: int = 28, model_type: str = "PPO",
+                 use_gt_distance: bool = False,
+                 cyclist_speed_range=(0.5, 1.5),
+                 initial_speed_range=(5, 15),
+                 max_episode_steps: int = 600):
         self.seed(SEED)
         self.eval_mode = eval_mode
         self.FIXED_DELTA_SECONDS = FIXED_DELTA_SECONDS
         self.MAX_STEER_DEGREES = MAX_STEER_DEGREES
-        
-        #// Braking reward
-        self.Brake_wide = Brake_wide
-        self.throttle_times = throttle_times
-        self.throttle_helper = throttlehelper
-        self.throttle_helper_2 = throttle_helper_2
-        self.omega = omega
-        self.SAFE_BRAKE_DISTANCE = safe_brake_distance
-        self.model_type = model_type
 
+        self.SAFE_BRAKE_DISTANCE = safe_brake_distance
+        self.TOO_CLOSE_BRAKE_DISTANCE = 3.5
+        self.model_type = model_type
+        self.max_speed = max_speed
+        self.use_gt_distance = use_gt_distance
+        self.cyclist_speed_range = cyclist_speed_range
+        self.initial_speed_range = initial_speed_range
+        self.max_episode_steps = max_episode_steps
+
+        # --- CARLA connection ---
         self.client = carla.Client("localhost", 2000)
         self.client.set_timeout(5.0)
         self.world = self.client.get_world()
 
         self.settings = self.world.get_settings()
-
         self.settings.synchronous_mode = True
-        #self.settings.synchronous_mode = False
-        self.settings.synchronous_mode = True
-        #self.settings.synchronous_mode = False
         self.settings.fixed_delta_seconds = self.FIXED_DELTA_SECONDS
         self.world.apply_settings(self.settings)
 
-        
-        self.TOO_CLOSE_BRAKE_DISTANCE = 3.5
         self.spawn_points = self.world.get_map().get_spawn_points()
-
-        self.vehicle_bp = self.world.get_blueprint_library().filter('*mini*')
-        self.Kp = 0.3
-        self.Ki = 0.0
-        self.Kd = 0.1
         self.dt = self.settings.fixed_delta_seconds
-        self.integral_error = 0.0
-        self.last_error = 0.0
-        self.max_speed = max_speed
 
-        self.step_counter = 0
-        self.episode_point = 0
+        # --- Steering PID (lateral controller, not learned) ---
+        self.Kp_steer = 0.8
+        self.Kd_steer = 0.2
 
-        #Car properties
+        # --- State ---
         self.speed = 0
+        self.avg_distance = 30.0
+        self.previousDistance = 30.0
+        self.distance_ema = None          # temporal filter for stereo depth
+        self.detection_valid = False      # whether we currently see the cyclist
+        self.distance_front = 0.0
+        self.distance_right = 0.0
+        self.EPISODE_REWARD = 0
+        self.step_counter = 0
 
-
-        #Braking properties
-        # self.goodbrake=0
-        # self.wrongbrake = 0
-        # self.emergencybrake = 0
-
-        # self.reallybadthrottle = 0
-        # self.badthrottle = 0
-        # self.goodthrottle = 0
-
-        self.brake_number = 0
-        self.throttle_number = 0
-
-        self.USEREINFORCEMENT = 9
-
-        #camera setup
+        # --- YOLO detector ---
         self.model = YOLO("best.pt")
-        self.CAMERA_POS_Z = 1.5 
+        self.CAMERA_POS_Z = 1.5
         self.CAMERA1_POS_X = 0
         self.CAMERA2_POS_X = 1
         self.CAMERA1_POS_Y = 0.5
-        self.CAMERA2_POS_Y = 1.5
 
         self.camera_bp = self.world.get_blueprint_library().find('sensor.camera.rgb')
-        self.camera_bp.set_attribute('image_size_x', '640') # this ratio works in CARLA 9.14 on Windows
+        self.camera_bp.set_attribute('image_size_x', '640')
         self.camera_bp.set_attribute('image_size_y', '360')
 
-        self.rightcamera1_init_trans = carla.Transform(carla.Location(z=self.CAMERA_POS_Z,x=self.CAMERA1_POS_X, y = self.CAMERA1_POS_Y), carla.Rotation(yaw=90))
-        self.rightcamera2_init_trans = carla.Transform(carla.Location(z=self.CAMERA_POS_Z,x=self.CAMERA2_POS_X, y = self.CAMERA1_POS_Y), carla.Rotation(yaw=90))
-        self.frontcamera1_init_trans = carla.Transform(carla.Location(z=self.CAMERA_POS_Z,x=self.CAMERA1_POS_X, y = self.CAMERA1_POS_Y))
-        self.frontcamera2_init_trans = carla.Transform(carla.Location(z=self.CAMERA_POS_Z,x=self.CAMERA1_POS_X, y = self.CAMERA2_POS_Y))
+        self.rightcamera1_init_trans = carla.Transform(
+            carla.Location(z=self.CAMERA_POS_Z, x=self.CAMERA1_POS_X, y=self.CAMERA1_POS_Y),
+            carla.Rotation(yaw=90))
+        self.rightcamera2_init_trans = carla.Transform(
+            carla.Location(z=self.CAMERA_POS_Z, x=self.CAMERA2_POS_X, y=self.CAMERA1_POS_Y),
+            carla.Rotation(yaw=90))
+        self.frontcamera1_init_trans = carla.Transform(
+            carla.Location(z=self.CAMERA_POS_Z, x=self.CAMERA1_POS_X, y=self.CAMERA1_POS_Y))
+        self.frontcamera2_init_trans = carla.Transform(
+            carla.Location(z=self.CAMERA_POS_Z, x=self.CAMERA2_POS_X, y=self.CAMERA1_POS_Y))
 
         self.image_w = self.camera_bp.get_attribute('image_size_x').as_int()
         self.image_h = self.camera_bp.get_attribute('image_size_y').as_int()
 
-        #return string
-        self.objectreturn = torch.tensor([0, 0, 0, 0, 0], dtype=torch.float32)
-        #reward properties
-        self.EPISODE_REWARD = 0
+        # Stereo parameters
+        self.fov = 90
+        self.baseline = 1.0
+        self.focal_length = self.image_w / (2 * math.tan(math.radians(self.fov / 2)))
+        self.y_threshold = 20
+        self.ema_alpha = 0.3
 
-        #view setup
+        # Observation vector (6 dims)
+        self.OBS_DIM = 6
+        self.objectreturn = torch.zeros(self.OBS_DIM, dtype=torch.float32)
+
         self.spectator = self.world.get_spectator()
 
-        print("Env torch")
-        print(print(torch.rand(1)))
-
-        print("Python random:", random.random())
-        print("NumPy random:", np.random.rand())
-
+    # ------------------------------------------------------------------ #
+    #  Seeding                                                            #
+    # ------------------------------------------------------------------ #
     def seed(self, seed):
         self.seed_value = seed
-
-        # Seed Python's built-in random module
         if seed is not None:
             random.seed(seed)
-
-        # Seed numpy random generators
-        self.np_random = np.random.seed(seed)
-        
-        # If using PyTorch, seed the torch RNG too
-        if torch:
+        np.random.seed(seed)
+        self.np_random = np.random.RandomState(seed)
+        if torch is not None:
             torch.manual_seed(seed)
-            torch.cuda.manual_seed_all(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
 
-
-    def setup_PID_controller(self, Kp = 0.3, Ki = 0.0, Kd = 0.1, integral_error = 0.0, last_error = 0.0, max_speed = 28):
-        self.Kp = Kp
-        self.Ki = Ki
-        self.Kd = Kd
-        self.dt = self.settings.fixed_delta_seconds
-        self.integral_error = integral_error
-        self.last_error = last_error
-        self.max_speed = max_speed
-
-
+    # ------------------------------------------------------------------ #
+    #  Cleanup                                                            #
+    # ------------------------------------------------------------------ #
     def cleanup(self):
-        print("Cleaning up environment...")
-
         actors_to_cleanup = [
             getattr(self, name, None) for name in [
                 'vehicle', 'bicycle',
@@ -150,635 +164,465 @@ class EnvironmentClass:
                 'collision_sensor'
             ]
         ]
-
         for actor in actors_to_cleanup:
-            print(actor)
             if actor is not None:
                 try:
                     actor.destroy()
-                except Exception as e:
-                    print(f"Could not destroy actor: {e}")
+                except Exception:
+                    pass
         self.world.tick()
         self.rightcamera1 = None
         self.rightcamera2 = None
         self.frontcamera1 = None
         self.frontcamera2 = None
         self.collision_sensor = None
-
         cv2.destroyAllWindows()
 
-    def routesetup(self, route):
-        self.route = route
-        self.curr_wp = 5
-
-    def test(self):
-        point_a = self.spawn_points[55].location
-        point_b = self.spawn_points[35].location
-        blueprint_library = self.world.get_blueprint_library()
-        vehicle_bp = blueprint_library.filter('*mini*')
-        self.vehicle = self.world.spawn_actor(vehicle_bp[0], carla.Transform(point_a))
-        time.sleep(1)
-
-
-        self.EPISODE_REWARD = 0
-        self.give_points = False
-        self.speed = 0.0
-        self.collision_detector_bp = self.world.get_blueprint_library().find('sensor.other.collision')
-        self.collision_sensor = self.world.spawn_actor(
-                self.collision_detector_bp,
-                carla.Transform(),
-                attach_to=self.vehicle
-            )
-        self.collision_sensor.listen(lambda event: self.process_collision(event))
-
-        #Required Variables
-        self.curr_wp = 5
-        self.avg_distance = 20
-        self.steering_angle = 0
-        self.collision_happened = False
-        self.previous_speed = 0
-        #Setup camera image
-        self.rightcamera1 = self.world.spawn_actor(self.camera_bp,self.rightcamera1_init_trans,attach_to=self.vehicle)
-        self.rightcamera2 = self.world.spawn_actor(self.camera_bp,self.rightcamera2_init_trans,attach_to=self.vehicle)
-        self.frontcamera1 = self.world.spawn_actor(self.camera_bp,self.frontcamera1_init_trans,attach_to=self.vehicle)
-        self.frontcamera2 = self.world.spawn_actor(self.camera_bp,self.frontcamera2_init_trans,attach_to=self.vehicle)
-
-        self.rightcamera1_data = {'image': np.zeros((self.image_h,self.image_w,4), dtype=np.uint8)}
-        self.rightcamera2_data = {'image': np.zeros((self.image_h,self.image_w,4), dtype=np.uint8)}
-        self.frontcamera1_data = {'image': np.zeros((self.image_h,self.image_w,4), dtype=np.uint8)}
-        self.frontcamera2_data = {'image': np.zeros((self.image_h,self.image_w,4), dtype=np.uint8)}
-        # this actually opens a live stream from the camera
-        self.rightcamera1.listen(lambda image: self.camera_callback(image,self.rightcamera1_data))
-        self.rightcamera2.listen(lambda image: self.camera_callback(image,self.rightcamera2_data))
-        self.frontcamera1.listen(lambda image: self.camera_callback(image,self.frontcamera1_data))
-        self.frontcamera2.listen(lambda image: self.camera_callback(image,self.frontcamera2_data))
-
-        self.world.tick()
-        v = self.vehicle.get_velocity()
-        kmh = int(3.6 * math.sqrt(v.x**2 + v.y**2 + v.z**2))
-        done = False
-        terminated = False
-        next_step = 0
-        reward = 0
-
-        return [self.objectreturn, reward, done, terminated, next_step, point_a, point_b, self.vehicle]
-
+    # ------------------------------------------------------------------ #
+    #  Reset                                                              #
+    # ------------------------------------------------------------------ #
     def reset(self):
-
-
-        print(f"EPISODE REWARD: {self.EPISODE_REWARD}")
-        print(f"Number of brakes in episode {self.brake_number}")
-        print(f"Number of throttles in a episode {self.throttle_number}")
+        print(f"EPISODE REWARD: {self.EPISODE_REWARD:.2f}")
 
         self.EPISODE_REWARD = 0
-        self.brake_number = 0
-        self.throttle_number = 0
-        # self.goodbrake=0
-        # self.wrongbrake = 0
-        # self.emergencybrake = 0
-        # self.goodthrottle = 0
-        # self.badthrottle = 0
-        # self.reallybadthrottle = 0
-
-        self.give_points = False
-        print(f"We are in this mode: {self.eval_mode}")
-        self.episode_point = 0
-        self.episode_run_time = 0
         self.speed = 0.0
-        #For now, test with this. Consant speed.
-        self.bicycle_speed = 1
-        #self.bicycle_speed = random.uniform(0.5, 1)
-        self.previousDistance = self.USEREINFORCEMENT
+        self.avg_distance = 30.0
+        self.previousDistance = 30.0
+        self.distance_ema = None
+        self.detection_valid = False
+        self.collision_happened = False
+        self.steering_angle = 0.0
+        self.step_counter = 0
+        self.curr_wp = 5
+
         self.vehicle = None
         self.bicycle = None
-        self.curr_wp = 5
         self.cleanup()
         self.bicycleorigin()
         self.carorigin()
-        self.steering_angle = 0
-        self.collision_happened = False
-        self.avg_distance = 20
-        self.previous_speed = 0
 
+        # Randomise cyclist speed each episode
+        self.bicycle_speed = random.uniform(*self.cyclist_speed_range)
+
+        # Collision sensor
         self.collision_detector_bp = self.world.get_blueprint_library().find('sensor.other.collision')
         self.collision_sensor = self.world.spawn_actor(
-                self.collision_detector_bp,
-                carla.Transform(),
-                attach_to=self.vehicle
-            )
+            self.collision_detector_bp, carla.Transform(), attach_to=self.vehicle)
         self.collision_sensor.listen(lambda event: self.process_collision(event))
+
+        # Route
         self.targetid = 27
         self.targetPoint = self.spawn_points[self.targetid]
-
         self.point_A = self.vehicle_start_point.location
         self.point_B = self.targetPoint.location
-
-
         self.sampling_resolution = 3
         self.grp = GlobalRoutePlanner(self.world.get_map(), self.sampling_resolution)
         self.route = self.grp.trace_route(self.point_A, self.point_B)
 
-        #Setup camera image
-        self.rightcamera1 = self.world.spawn_actor(self.camera_bp,self.rightcamera1_init_trans,attach_to=self.vehicle)
-        self.rightcamera2 = self.world.spawn_actor(self.camera_bp,self.rightcamera2_init_trans,attach_to=self.vehicle)
-        self.frontcamera1 = self.world.spawn_actor(self.camera_bp,self.frontcamera1_init_trans,attach_to=self.vehicle)
-        self.frontcamera2 = self.world.spawn_actor(self.camera_bp,self.frontcamera2_init_trans,attach_to=self.vehicle)
+        # Cameras
+        self.rightcamera1 = self.world.spawn_actor(self.camera_bp, self.rightcamera1_init_trans, attach_to=self.vehicle)
+        self.rightcamera2 = self.world.spawn_actor(self.camera_bp, self.rightcamera2_init_trans, attach_to=self.vehicle)
+        self.frontcamera1 = self.world.spawn_actor(self.camera_bp, self.frontcamera1_init_trans, attach_to=self.vehicle)
+        self.frontcamera2 = self.world.spawn_actor(self.camera_bp, self.frontcamera2_init_trans, attach_to=self.vehicle)
 
-        self.rightcamera1_data = {'image': np.zeros((self.image_h,self.image_w,4), dtype=np.uint8)}
-        self.rightcamera2_data = {'image': np.zeros((self.image_h,self.image_w,4), dtype=np.uint8)}
-        self.frontcamera1_data = {'image': np.zeros((self.image_h,self.image_w,4), dtype=np.uint8)}
-        self.frontcamera2_data = {'image': np.zeros((self.image_h,self.image_w,4), dtype=np.uint8)}
-        # this actually opens a live stream from the camera
-        self.rightcamera1.listen(lambda image: self.camera_callback(image,self.rightcamera1_data))
-        self.rightcamera2.listen(lambda image: self.camera_callback(image,self.rightcamera2_data))
-        self.frontcamera1.listen(lambda image: self.camera_callback(image,self.frontcamera1_data))
-        self.frontcamera2.listen(lambda image: self.camera_callback(image,self.frontcamera2_data))
+        self.rightcamera1_data = {'image': np.zeros((self.image_h, self.image_w, 4), dtype=np.uint8)}
+        self.rightcamera2_data = {'image': np.zeros((self.image_h, self.image_w, 4), dtype=np.uint8)}
+        self.frontcamera1_data = {'image': np.zeros((self.image_h, self.image_w, 4), dtype=np.uint8)}
+        self.frontcamera2_data = {'image': np.zeros((self.image_h, self.image_w, 4), dtype=np.uint8)}
 
+        self.rightcamera1.listen(lambda image: self.camera_callback(image, self.rightcamera1_data))
+        self.rightcamera2.listen(lambda image: self.camera_callback(image, self.rightcamera2_data))
+        self.frontcamera1.listen(lambda image: self.camera_callback(image, self.frontcamera1_data))
+        self.frontcamera2.listen(lambda image: self.camera_callback(image, self.frontcamera2_data))
 
         self.world.tick()
-        v = self.vehicle.get_velocity()
-        kmh = int(3.6 * math.sqrt(v.x**2 + v.y**2 + v.z**2))
+        self._update_observation()
+
         done = False
         terminated = False
-        next_step = 0
-        reward = 0
+        reward = 0.0
+        return [self.objectreturn, reward, done, terminated]
 
-        return [self.objectreturn, reward, done, terminated, next_step]
+    # ------------------------------------------------------------------ #
+    #  Step                                                               #
+    # ------------------------------------------------------------------ #
+    def step(self, action: Optional[float] = None, training: bool = True):
+        """Apply the RL action (longitudinal control) and advance the sim.
 
+        ``action`` is a scalar in [-1, 1]:
+            action > 0  ->  throttle = action,  brake = 0
+            action < 0  ->  throttle = 0,       brake = |action|
+        Steering is always controlled by the waypoint follower.
+        """
+        if action is None:
+            action = 0.0
+
+        action = float(action)
+        action = max(-1.0, min(1.0, action))
+        throttle = max(0.0, action)
+        brake = max(0.0, -action)
+
+        # Cyclist moves at its randomised speed
+        if training:
+            self.bicycle.apply_control(carla.VehicleControl(throttle=self.bicycle_speed))
+
+        # Ego vehicle: RL longitudinal + waypoint steering
+        self.vehicle.apply_control(
+            carla.VehicleControl(throttle=throttle, brake=brake,
+                                 steer=float(self.steering_angle)))
+
+        # Spectator (eval only)
+        if not training:
+            transform = self.vehicle.get_transform()
+            location = transform.location
+            rotation = transform.rotation
+            offset = carla.Location(x=-6, z=3)
+            camera_location = self.get_offset_location(location, rotation.yaw, offset)
+            self.spectator.set_transform(
+                carla.Transform(camera_location, carla.Rotation(pitch=-15, yaw=rotation.yaw)))
+            loc = self.vehicle.get_location()
+            self.world.debug.draw_string(
+                loc + carla.Location(z=2.5), "Ego", draw_shadow=False,
+                color=carla.Color(255, 255, 0), persistent_lines=False)
+            self.world.debug.draw_string(
+                loc + carla.Location(z=2.4), f"B:{brake:.2f} T:{throttle:.2f}",
+                draw_shadow=False, color=carla.Color(255, 255, 0), persistent_lines=False)
+
+        self.world.tick()
+        self.step_counter += 1
+        self.Detection()
+
+        # Waypoint debug
+        next_wp = self.route[min(self.curr_wp, len(self.route) - 1)][0].transform.location
+        self.world.debug.draw_point(next_wp, size=0.3, color=carla.Color(0, 255, 0), life_time=2.0)
+
+        # Speed
+        v = self.vehicle.get_velocity()
+        self.speed = int(3.6 * math.sqrt(v.x**2 + v.y**2 + v.z**2))
+
+        # --- Reward ---
+        self._update_observation()
+        reward, done, terminated = self._compute_reward(throttle, brake)
+
+        self.EPISODE_REWARD += reward
+        self.previousDistance = self.avg_distance
+
+        return [self.objectreturn, reward, done, terminated]
+
+    def _compute_reward(self, throttle, brake):
+        """Reward designed for full RL longitudinal control.
+
+        Components:
+          1. Progress incentive: reward proportional to speed (encourage moving).
+          2. Safety: penalise being too close to the cyclist.
+          3. Distance keeping: penalise deviation from safe braking distance.
+          4. Closing-rate penalty: penalise approaching the cyclist too fast.
+          5. Control regularisation: small penalty on control magnitude.
+          6. Terminal: large penalty for collision, large bonus for reaching goal.
+        """
+        reward = 0.0
+        done = False
+        terminated = False
+
+        # 1. Progress incentive — reward forward motion strongly enough
+        #    to overcome the living cost.  At 20 km/h this gives +0.7/step.
+        speed_reward = self.speed / max(self.max_speed, 1)
+        speed_reward = max(0.0, min(1.0, speed_reward))
+        reward += 0.5 * speed_reward
+
+        # Small living cost so the agent prefers shorter episodes
+        reward -= 0.05
+
+        # 2-4. Safety and distance shaping (only when we have a valid detection)
+        if self.detection_valid and self.avg_distance < 50.0:
+            e_d = self.avg_distance - self.SAFE_BRAKE_DISTANCE
+
+            # Distance error: 0 at safe distance, negative away from it
+            reward += -0.3 * abs(e_d) / self.SAFE_BRAKE_DISTANCE
+
+            # Closing-rate penalty (deltat < 0 means approaching)
+            deltat = self.avg_distance - self.previousDistance
+            deltat = max(min(deltat, 5.0), -5.0)
+            if deltat < 0:
+                # Penalise closing, more so when already close
+                closeness_factor = max(0.0, 1.0 - self.avg_distance / self.SAFE_BRAKE_DISTANCE)
+                reward += 0.5 * deltat * (1.0 + closeness_factor)
+
+            # Too close — large penalty
+            if self.avg_distance < self.TOO_CLOSE_BRAKE_DISTANCE:
+                reward -= 5.0
+
+        # 5. Control regularisation (very small, just to avoid oscillation)
+        reward -= 0.005 * (throttle + brake)
+
+        # 6. Terminal conditions
+        if self.collision_happened:
+            reward -= 100.0
+            done = True
+            terminated = True
+            self.cleanup()
+            return reward, done, terminated
+
+        # Reached goal
+        if self.vehicle.get_transform().location.distance(
+                self.route[-1][0].transform.location) < 6:
+            reward += 100.0
+            done = True
+            self.cleanup()
+            return reward, done, terminated
+
+        # Timeout
+        if self.step_counter >= self.max_episode_steps:
+            done = True
+            self.cleanup()
+            return reward, done, terminated
+
+        return reward, done, terminated
+
+    def _update_observation(self):
+        """Build the observation vector and update filtered distance."""
+        # Get distance (GT or stereo)
+        if self.use_gt_distance:
+            self._compute_gt_distance()
+        else:
+            self._compute_stereo_distance()
+
+        # Clamp inf/nan
+        if (self.avg_distance == np.inf or self.avg_distance == -np.inf
+                or math.isnan(self.avg_distance)):
+            self.avg_distance = 30.0
+            self.detection_valid = False
+
+        deltat = self.avg_distance - self.previousDistance
+        deltat = max(min(deltat, 10.0), -10.0)
+        e_d = self.avg_distance - self.SAFE_BRAKE_DISTANCE
+
+        # Normalised observation vector:
+        #   [speed/max_speed, distance/30, delta_dist/10, dist_error/30,
+        #    safe_brake/30, detection_flag]
+        self.objectreturn = torch.tensor([
+            self.speed / max(self.max_speed, 1),
+            self.avg_distance / 30.0,
+            deltat / 10.0,
+            e_d / 30.0,
+            self.SAFE_BRAKE_DISTANCE / 30.0,
+            1.0 if self.detection_valid else 0.0
+        ], dtype=torch.float32)
+
+    def _compute_gt_distance(self):
+        """Ground-truth distance from CARLA actor locations."""
+        if self.bicycle is None or self.vehicle is None:
+            self.avg_distance = 30.0
+            self.detection_valid = False
+            return
+        d = self.vehicle.get_location().distance(self.bicycle.get_location())
+        self.avg_distance = d
+        self.detection_valid = True
+
+    def _compute_stereo_distance(self):
+        """Stereo depth with sub-pixel disparity and EMA temporal filter."""
+        raw_distance = None
+
+        if self.distance_front > 0 and self.distance_right > 0:
+            min_d = min(self.distance_front, self.distance_right)
+            max_d = max(self.distance_front, self.distance_right)
+            raw_distance = min_d * 0.7 + max_d * 0.3
+        elif self.distance_front > 0:
+            raw_distance = self.distance_front
+        elif self.distance_right > 0:
+            raw_distance = self.distance_right
+
+        if raw_distance is not None and raw_distance > 0 and raw_distance != float('inf'):
+            # EMA temporal filter
+            if self.distance_ema is None:
+                self.distance_ema = raw_distance
+            else:
+                self.distance_ema = (self.ema_alpha * raw_distance
+                                     + (1 - self.ema_alpha) * self.distance_ema)
+            self.avg_distance = self.distance_ema
+            self.detection_valid = True
+        else:
+            # No detection — keep last known distance but mark as invalid
+            if self.distance_ema is not None:
+                self.avg_distance = self.distance_ema
+            else:
+                self.avg_distance = 30.0
+            self.detection_valid = False
+
+    # ------------------------------------------------------------------ #
+    #  Spawning                                                           #
+    # ------------------------------------------------------------------ #
+    def bicycleorigin(self):
+        self.bicycle_bp = self.world.get_blueprint_library().filter('*crossbike*')
+        # Try the preferred spawn point, then fall back
+        preferred = [1, 2, 3, 4, 6, 7, 8]
+        self.bicycle = None
+        for sp_id in preferred:
+            if sp_id >= len(self.spawn_points):
+                continue
+            self.bicycle_start_point = self.spawn_points[sp_id]
+            self.bicycle = self.world.try_spawn_actor(
+                self.bicycle_bp[0], self.bicycle_start_point)
+            if self.bicycle is not None:
+                print(f"Bicycle spawned at point {sp_id}")
+                break
+        if self.bicycle is None:
+            raise RuntimeError("Failed to spawn the bicycle at any spawn point.")
+        bicyclepos = carla.Transform(
+            self.bicycle_start_point.location + carla.Location(x=-3, y=3.5))
+        self.bicycle.set_transform(bicyclepos)
+        for _ in range(40):
+            self.world.tick()
+            time.sleep(0.05)
+
+    def carorigin(self):
+        self.vehicle_bp = self.world.get_blueprint_library().filter('*mini*')
+        # Try the preferred spawn point, then fall back to alternatives
+        preferred = [94, 0, 5, 10, 50, 100, 55, 35]
+        self.vehicle = None
+        for sp_id in preferred:
+            if sp_id >= len(self.spawn_points):
+                continue
+            self.vehicle_start_point = self.spawn_points[sp_id]
+            self.vehicle = self.world.try_spawn_actor(
+                self.vehicle_bp[0], self.vehicle_start_point)
+            if self.vehicle is not None:
+                print(f"Ego vehicle spawned at point {sp_id}")
+                break
+        if self.vehicle is None:
+            raise RuntimeError("Failed to spawn the ego vehicle at any spawn point.")
+        for _ in range(40):
+            self.world.tick()
+            time.sleep(0.05)
+
+        # Give the car an initial forward velocity so it doesn't get stuck
+        # at a standstill with a random initial policy.
+        initial_speed_kmh = random.uniform(*self.initial_speed_range)
+        initial_speed_ms = initial_speed_kmh / 3.6  # m/s
+        # Get the forward direction from the spawn point's rotation
+        yaw = math.radians(self.vehicle_start_point.rotation.yaw)
+        forward_vec = carla.Vector3D(x=math.cos(yaw), y=math.sin(yaw), z=0)
+        velocity = carla.Vector3D(
+            x=forward_vec.x * initial_speed_ms,
+            y=forward_vec.y * initial_speed_ms,
+            z=0)
+        self.vehicle.set_target_velocity(velocity)
+        self.world.tick()
+        print(f"Ego vehicle initial speed: {initial_speed_kmh:.1f} km/h")
+
+    # ------------------------------------------------------------------ #
+    #  Utilities                                                          #
+    # ------------------------------------------------------------------ #
     def get_offset_location(self, base_location, yaw, offset):
-        """Rotates the offset based on yaw and adds it to the base location"""
         rad = math.radians(yaw)
         x = base_location.x + offset.x * math.cos(rad) - offset.y * math.sin(rad)
         y = base_location.y + offset.x * math.sin(rad) + offset.y * math.cos(rad)
         z = base_location.z + offset.z
         return carla.Location(x=x, y=y, z=z)
 
-
-    def step(self, controlValues: Optional[int] = None, training: bool = 1):
-
-        if self.avg_distance < self.USEREINFORCEMENT:
-            self.give_points = True
-
-            if self.model_type == "PPO":
-                throttle = F.relu(T.tensor(controlValues))
-                brake    = F.relu(T.tensor(-controlValues))
-                print("Brake and throttle")
-                print(brake)
-                print(throttle)
-            elif self.model_type == 'ActorCritic':
-                throttle = F.relu(T.tensor(controlValues))
-                brake    = F.relu(T.tensor(-controlValues))
-
-            elif self.model_type == "DDPG":
-                throttle = F.relu(T.tensor(controlValues))
-                brake    = F.relu(T.tensor(-controlValues))
-
-                
-        else:
-            self.give_points = False
-            throttle, brake = self.update_control(self.max_speed)
-        if training:
-            self.bicycle.apply_control(carla.VehicleControl(throttle=self.bicycle_speed))
-        self.vehicle.apply_control(carla.VehicleControl(throttle=float(throttle), brake=float(brake), steer = float(self.steering_angle)))
-
-        #for view pusposes_only
-        transform = self.vehicle.get_transform()
-        location = transform.location
-        rotation = transform.rotation
-
-        # Adjust camera position (behind and above vehicle)
-        offset = carla.Location(x=-6, z=3)
-        camera_location = self.get_offset_location(location, rotation.yaw, offset)
-
-        if not training:
-            self.spectator.set_transform(carla.Transform(camera_location, carla.Rotation(pitch=-15, yaw=rotation.yaw)))
-
-            loc = self.vehicle.get_location()
-            self.world.debug.draw_string(loc + carla.Location(z=2.5), "Ego Vehicle", draw_shadow=False,
-                            color=carla.Color(255, 255, 0), persistent_lines=False)
-            self.world.debug.draw_string(loc + carla.Location(z=2.4), f"Brake: {brake}", draw_shadow=False,
-                            color=carla.Color(255, 255, 0) , persistent_lines=False)
-            self.world.debug.draw_string(loc + carla.Location(z=2.3), f"Throttle: {throttle}", draw_shadow=False,
-                            color=carla.Color(255, 255, 0) , persistent_lines=False)
-            self.world.debug.draw_string(loc + carla.Location(z=2.2), f"Speed: {self.speed}", draw_shadow=False,
-                            color=carla.Color(255, 255, 0) , persistent_lines=False)
-
-
-
-
-
-        self.world.tick()
-        self.Detection()
-        next_waypoint_location = self.route[self.curr_wp][0].transform.location
-
-        # Draw a sphere at the waypoint location
-        self.world.debug.draw_string(
-            next_waypoint_location,            # Location of the waypoint
-            "Next WP",                         # Label to display
-            draw_shadow=False,
-            color=carla.Color(255, 0, 0),      # Red color
-            life_time=2.0,                     # Duration the marker is visible (seconds)
-            persistent_lines=False
-        )
-
-        self.world.debug.draw_point(
-            next_waypoint_location,
-            size=0.3,                         # Size of the sphere
-            color=carla.Color(0, 255, 0),     # Green color
-            life_time=2.0                     # Duration
-        )
-
-        v = self.vehicle.get_velocity()
-        kmh = int(3.6 * math.sqrt(v.x**2 + v.y**2 + v.z**2))
-        self.speed = kmh
-
-
-        #Giving reward
-        reward = 0
-        done = False
-        terminated = False
-        distance_reward = 0
-
-        #// New Rewrd system
-        print("Average distance")
-        print(self.avg_distance)
-        print("Safe brake")
-        print(self.SAFE_BRAKE_DISTANCE)
-
-        if self.avg_distance == np.inf or self.avg_distance == -np.inf or self.avg_distance == float("inf") or self.avg_distance == float("-inf"):
-            self.avg_distance = 20
-
-
-        e_d = self.avg_distance - self.SAFE_BRAKE_DISTANCE #distance error
-        print("Distance Error")
-        print(e_d)
-        if self.give_points:
-            reward += -1 * abs(e_d)# - 0.05 * (throttle**2 + brake**2)
-            print("Reward from distance")
-            print(reward)
-            if self.avg_distance < self.TOO_CLOSE_BRAKE_DISTANCE:
-                reward -= 50
-
-        #// Penalty for speeding
-        # if self.give_points:
-        #     if kmh > 30:
-        #         reward -= 3
-
-        # if self.max_speed - 5 < self.speed < self.max_speed:
-        #     reward += 2 
-
-        # if self.give_points:
-
-        #     if brake:
-        #         # if self.SAFE_BRAKE_DISTANCE > self.avg_distance > self.TOO_CLOSE_BRAKE_DISTANCE:
-        #         #     self.goodbrake += 1
-        #         #     reward += 100  # Proper braking
-        #         # elif self.avg_distance > self.SAFE_BRAKE_DISTANCE:
-        #         #     self.wrongbrake += 1
-        #         #     reward -= 100  # Unnecessary braking
-        #         # elif self.avg_distance < self.TOO_CLOSE_BRAKE_DISTANCE:
-        #         #     self.emergencybrake += 1
-        #         #     reward += 10  # Failure to brake in tim
-
-        #         reward += 2 * np.exp( -((self.avg_distance - self.SAFE_BRAKE_DISTANCE) ** 2) / (self.Brake_wide * self.omega ** 2) ) - 1
-        #         self.brake_number += 1
-
-        #     if throttle:
-        #         # if self.SAFE_BRAKE_DISTANCE > self.avg_distance > self.TOO_CLOSE_BRAKE_DISTANCE:
-        #         #     self.badthrottle += 1
-        #         #     reward -= 100  # Bad Throttle
-        #         # elif self.avg_distance > self.SAFE_BRAKE_DISTANCE:
-        #         #     self.goodthrottle += 1
-        #         #     reward += 100  # Good Throttle
-        #         # elif self.avg_distance < self.TOO_CLOSE_BRAKE_DISTANCE:
-        #         #     self.reallybadthrottle += 1
-        #         #     reward -= 120  # Really Bad Throttle
-        #         reward += self.throttle_helper_2 / (1 + np.exp(-(self.throttle_times * self.avg_distance - self.throttle_helper))) - 1
-        #         self.throttle_number += 1
-
-
-        deltat = self.avg_distance - self.previousDistance
-
-        print("Delta T")
-        print(deltat)
-
-
-        self.objectreturn = torch.tensor([
-            self.speed,
-            self.avg_distance,
-            deltat,
-            e_d,
-            self.SAFE_BRAKE_DISTANCE
-            # original_throttle,
-            # original_brake,
-            # choosen_action
-
-        ], dtype=torch.float32)
-
-
-        print("avg distance")
-        print(self.avg_distance)
-        print(self.USEREINFORCEMENT)
-        if self.avg_distance < self.USEREINFORCEMENT:
-            next_step = 1
-        else:
-            next_step = 0
-           
-        #Collision and Out-of-Bounds Penalties
-        if self.collision_happened:
-                if self.give_points:
-                    reward -= 100
-                done = True
-                terminated = True
-                self.EPISODE_REWARD += reward
-                self.cleanup()
-
-                return [self.objectreturn, reward, done, terminated, next_step]
-
-        if training:
-        #Reaching the end
-            if self.vehicle.get_transform().location.distance(self.route[-1][0].transform.location) < 6:
-                done = True
-                self.cleanup()
-
-                return [self.objectreturn, reward, done, terminated, next_step]
-
-
-        self.EPISODE_REWARD += reward
-        self.previousDistance = self.avg_distance
-
-
-        return [self.objectreturn, reward, done, terminated, next_step]
-
-
-    #Origins
-    def bicycleorigin(self):
-        self.bicycle_bp = self.world.get_blueprint_library().filter('*crossbike*')
-        self.bicycle_start_point = self.spawn_points[1]
-
-        self.bicycle = self.world.try_spawn_actor(self.bicycle_bp[0], self.bicycle_start_point)
-        bicyclepos = carla.Transform(self.bicycle_start_point.location + carla.Location(x=-3, y=3.5))
-        self.bicycle.set_transform(bicyclepos)
-        for _ in range(40):  # wait for half a second
-            #"Still Falling - Cyclist")
-            self.world.tick()
-            time.sleep(0.05)
-
-    def carorigin(self):
-        self.vehicle_bp = self.world.get_blueprint_library().filter('*mini*')
-        self.vehicle_start_point = self.spawn_points[94]
-        self.vehicle = self.world.try_spawn_actor(self.vehicle_bp[0], self.vehicle_start_point)
-        for _ in range(40):  # wait for half a second
-            #print("Still Falling - Car")
-            self.world.tick()
-            time.sleep(0.05)
-
-
-    #Utilities
-    def update_control(self, desired_speed):
-        current_speed = self.speed
-        speed_error = desired_speed - current_speed
-        self.integral_error += speed_error * self.dt
-        derivative_error = (speed_error - self.last_error) / self.dt
-        self.last_error = speed_error
-
-        # PID computation
-        control_output = self.Kp * speed_error + self.Ki * self.integral_error + self.Kd * derivative_error
-
-
-        # Map control output to throttle and brake command
-        if control_output > 0:
-            throttle = min(control_output, 1.0)
-            brake = 0.0
-        else:
-            throttle = 0.0
-            brake = min(abs(control_output), 1.0)
-        
-        return throttle, brake
-    
     def process_collision(self, event):
-        # Extract collision data
-        self.other_actor = event.other_actor
-        self.impulse = event.normal_impulse
-        self.collision_location = event.transform.location
         self.collision_happened = True
 
     def angle_between(self, v1, v2):
         return math.degrees(np.arctan2(v1[1], v1[0]) - np.arctan2(v2[1], v2[0]))
 
     def get_angle(self, car, wp):
-        self.vehicle_pos = car.get_transform()
-        self.car_x = self.vehicle_pos.location.x
-        self.car_y = self.vehicle_pos.location.y
-        self.wp_x = wp.transform.location.x
-        self.wp_y = wp.transform.location.y
+        vp = car.get_transform()
+        dx = wp.transform.location.x - vp.location.x
+        dy = wp.transform.location.y - vp.location.y
+        norm = math.sqrt(dx**2 + dy**2)
+        if norm < 1e-6:
+            return 0.0
+        wx = dx / norm
+        wy = dy / norm
+        fv = vp.get_forward_vector()
+        return self.angle_between((wx, wy), (fv.x, fv.y))
 
-
-        #vector to waypoint
-        self.x = (self.wp_x - self.car_x)/((self.wp_y - self.car_y)**2 + (self.wp_x - self.car_x)**2)**0.5
-        self.y = (self.wp_y - self.car_y)/((self.wp_y - self.car_y)**2 + (self.wp_x - self.car_x)**2)**0.5
-
-
-        #car vector
-        self.car_vector = self.vehicle_pos.get_forward_vector()
-        self.degrees = self.angle_between((self.x,self.y), (self.car_vector.x, self.car_vector.y))
-
-        return self.degrees
-
+    # ------------------------------------------------------------------ #
+    #  Detection & stereo                                                 #
+    # ------------------------------------------------------------------ #
     def Detection(self):
+        """Run YOLO on all 4 cameras, match stereo pairs, compute depth."""
+        # Advance waypoint
+        if self.vehicle.get_transform().location.distance(
+                self.route[self.curr_wp][0].transform.location) < 3:
+            self.curr_wp = min(self.curr_wp + 1, len(self.route) - 1)
 
+        # Grab frames
+        rf1 = cv2.cvtColor(self.rightcamera1_data['image'], cv2.COLOR_BGRA2BGR)
+        rf2 = cv2.cvtColor(self.rightcamera2_data['image'], cv2.COLOR_BGRA2BGR)
+        ff1 = cv2.cvtColor(self.frontcamera1_data['image'], cv2.COLOR_BGRA2BGR)
+        ff2 = cv2.cvtColor(self.frontcamera2_data['image'], cv2.COLOR_BGRA2BGR)
 
-        if self.vehicle.get_transform().location.distance(self.route[self.curr_wp][0].transform.location) < 3:
-            self.curr_wp += 1
+        # YOLO detection (verbose=False for all to reduce log spam)
+        det_r1 = self._detect_bicycles(rf1)
+        det_r2 = self._detect_bicycles(rf2)
+        det_f1 = self._detect_bicycles(ff1)
+        det_f2 = self._detect_bicycles(ff2)
 
-        self.rightframe1 = self.rightcamera1_data['image']
-        self.rightframe2 = self.rightcamera2_data['image']
-        self.frontframe1 = self.frontcamera1_data['image']
-        self.frontframe2 = self.frontcamera2_data['image']
+        # Stereo matching with sub-pixel disparity
+        self.distance_right = self._stereo_depth(det_r1, det_r2)
+        self.distance_front = self._stereo_depth(det_f1, det_f2)
 
-        # Convert RGB image from BGRA to BGR
-        self.rightframe1 = cv2.cvtColor(self.rightframe1, cv2.COLOR_BGRA2BGR)
-        self.rightframe2 = cv2.cvtColor(self.rightframe2, cv2.COLOR_BGRA2BGR)
-        self.frontframe1 = cv2.cvtColor(self.frontframe1, cv2.COLOR_BGRA2BGR)
-        self.frontframe2 = cv2.cvtColor(self.frontframe2, cv2.COLOR_BGRA2BGR)
+        # Steering (waypoint follower — not learned)
+        self.predicted_angle = self.get_angle(self.vehicle, self.route[self.curr_wp][0])
+        if self.predicted_angle < -300:
+            self.predicted_angle += 360
+        elif self.predicted_angle > 300:
+            self.predicted_angle -= 360
 
-        self.results_right1 = self.model(self.rightframe1, verbose=False)
-        self.results_right2 = self.model(self.rightframe2)
-        
-        self.results_front1 = self.model(self.frontframe1)
-        self.results_front2 = self.model(self.frontframe2)
-        
-        self.bicycles_right1 = []
-        self.bicycles_right2 = []
-        self.bicycles_front1 = []
-        self.bicycles_front2 = []
+        self.steering_angle = max(-self.MAX_STEER_DEGREES,
+                                  min(self.MAX_STEER_DEGREES, self.predicted_angle))
+        self.steering_angle = self.steering_angle / self.MAX_STEER_DEGREES
 
-        for result in self.results_right1:
+    def _detect_bicycles(self, frame):
+        """Run YOLO and return list of (center_x_float, center_y_float, conf)."""
+        results = self.model(frame, verbose=False)
+        detections = []
+        for result in results:
             for box in result.boxes:
                 if box.conf[0] < 0.5:
                     continue
-                # Extract box coordinates and other details
                 x1, y1, x2, y2 = box.xyxy[0]
-                center_x = int((x1 + x2) / 2)  # x-center of the bicycle
-                center_y = int((y1 + y2) / 2)  # y-center of the bicycle
-                self.bicycles_right1.append((center_x, center_y))
-                conf = box.conf[0]            # Confidence score
-                cls = box.cls[0]
-                cv2.rectangle(self.rightframe1, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
-                label = f"{self.model.names[int(cls)]}: {conf:.2f}"
-                cv2.putText(self.rightframe1, label, (int(x1), int(y1) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                # Use float centres for sub-pixel disparity
+                cx = float((x1 + x2) / 2)
+                cy = float((y1 + y2) / 2)
+                conf = float(box.conf[0])
+                detections.append((cx, cy, conf))
+        return detections
 
-                #break
-                # Bounding box coordinates
-        
-        for result in self.results_right2:
-            for box2 in result.boxes:
-                if box2.conf[0] < 0.5:
-                    continue
-                # Extract box coordinates and other details
-                x1, y1, x2, y2 = box2.xyxy[0]
-                center_x = int((x1 + x2) / 2)
-                center_y = int((y1 + y2) / 2)
-                self.bicycles_right2.append((center_x, center_y))
-                conf = box2.conf[0]            # Confidence score
-                cls = box2.cls[0]
+    def _stereo_depth(self, det_left, det_right):
+        """Match detections between stereo pair and return best depth.
 
-                cv2.rectangle(self.rightframe2, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
-                label = f"{self.model.names[int(cls)]}: {conf:.2f}"
-                cv2.putText(self.rightframe2, label, (int(x1), int(y1) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-        
-        for result in self.results_front1:
-            for box2 in result.boxes:
-                if box2.conf[0] < 0.5:
-                    continue
-                # Extract box coordinates and other details
-                x1, y1, x2, y2 = box2.xyxy[0]
-                center_x = int((x1 + x2) / 2)
-                center_y = int((y1 + y2) / 2)
-                self.bicycles_front1.append((center_x, center_y))
-                conf = box2.conf[0]            # Confidence score
-                cls = box2.cls[0]
+        Uses sub-pixel disparity (float centre_x) and returns the
+        minimum depth (closest detected cyclist).
+        """
+        if not det_left or not det_right:
+            return 0.0
 
-                cv2.rectangle(self.frontframe1, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
-                label = f"{self.model.names[int(cls)]}: {conf:.2f}"
-                cv2.putText(self.frontframe1, label, (int(x1), int(y1) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-        
-        for result in self.results_front2:
-            for box2 in result.boxes:
-                if box2.conf[0] < 0.5:
-                    continue
-                # Extract box coordinates and other details
-                x1, y1, x2, y2 = box2.xyxy[0]
-                center_x = int((x1 + x2) / 2)
-                center_y = int((y1 + y2) / 2)
-                self.bicycles_front2.append((center_x, center_y))
-                conf = box2.conf[0]            # Confidence score
-                cls = box2.cls[0]
+        best_depth = float('inf')
+        for lx, ly, _ in det_left:
+            closest_rx = None
+            min_dy = self.y_threshold
+            for rx, ry, _ in det_right:
+                dy = abs(ly - ry)
+                if dy < min_dy:
+                    min_dy = dy
+                    closest_rx = rx
+            if closest_rx is not None:
+                disparity = abs(lx - closest_rx)
+                if disparity > 0.5:  # avoid division by near-zero
+                    depth = (self.focal_length * self.baseline) / disparity
+                    if depth < best_depth:
+                        best_depth = depth
 
-                cv2.rectangle(self.frontframe2, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
-                label = f"{self.model.names[int(cls)]}: {conf:.2f}"
-                cv2.putText(self.frontframe2, label, (int(x1), int(y1) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        return best_depth if best_depth != float('inf') else 0.0
 
-        self.matched_bicycles_with_distances_right = self.match_bicycles_between_left_right(self.bicycles_right1, self.bicycles_right2)
-        self.matched_bicycles_with_distances_front = self.match_bicycles_between_left_right(self.bicycles_front1, self.bicycles_front2)
-        # Display distance for each matched bicycle on the left frame
-        
-        self.distance_front = 0
-        self.distance_right = 0
+    def camera_callback(self, image, data_dict):
+        data_dict['image'] = np.reshape(
+            np.copy(image.raw_data), (image.height, image.width, 4))
 
-
-        for (left_bicycle, distance) in self.matched_bicycles_with_distances_right:
-            left_x, left_y = left_bicycle
-            distance_label = f"Distance: {distance:.2f}m"
-            self.distance_right = distance
-            cv2.putText(self.rightframe1, distance_label, (left_x, left_y-20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
-        #cv2.imshow('Camera2',self.rightframe1)
-        
-
-        for (left_bicycle, distance) in self.matched_bicycles_with_distances_front:
-            left_x, left_y = left_bicycle
-            self.distance_front = distance
-            distance_label = f"Distance: {distance:.2f}m"
-            cv2.putText(self.frontframe1, distance_label, (left_x, left_y-20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
-        cv2.putText(self.frontframe1, f"{self.speed} km/h", (10, 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
-        #cv2.imshow('Camera1',self.frontframe1)
-
-        # Exit loop on 'q' key press
-        #if cv2.waitKey(1) == ord('q'):
-        #    print("[INFO] 'q' pressed — exiting...")
-        #    done = True
-        
-        if self.distance_front > 0 and self.distance_right > 0:
-            min_distance = np.min([self.distance_front, self.distance_right])
-            max_distance = np.max([self.distance_front, self.distance_right])
-
-            self.avg_distance = (min_distance*0.7 + max_distance*0.3)
-        elif self.distance_front == 0 and self.distance_right > 0:
-            self.avg_distance = self.distance_right
-        elif self.distance_right == 0 and self.distance_front > 0:
-            self.avg_distance = self.distance_front
-        else:
-            self.avg_distance = 30
-        self.predicted_angle = self.get_angle(self.vehicle, self.route[self.curr_wp][0])
-
-
-        if self.predicted_angle < -300:
-            self.predicted_angle = self.predicted_angle+360
-        elif self.predicted_angle > 300:
-            self.predicted_angle = self.predicted_angle - 360
-        self.steering_angle = self.predicted_angle
-
-        if self.predicted_angle < -self.MAX_STEER_DEGREES:
-            self.steering_angle = -self.MAX_STEER_DEGREES
-        elif self.predicted_angle>self.MAX_STEER_DEGREES:
-            self.steering_angle = self.MAX_STEER_DEGREES
-
-    
-        self.estimated_throttel = 0
-        self.steering_angle = self.steering_angle/self.MAX_STEER_DEGREES
-
-
-
-    #Camera Properties
-    def match_bicycles_between_left_right(self, bicycles_left: list, bicycles_right: list):
-        self.image_w = 640  # Image width
-        self.fov = 90  # Field of view in degrees
-        self.baseline = 1  # Baseline distance in meters
-        self.focal_length = self.image_w / (2 * math.tan(math.radians(self.fov / 2)))  # Focal length in pixels
-
-        
-        self.y_threshold = 20  # pixels, adjust based on image scale
-        self.matched_bicycles_with_distances = []
-
-        for left_bicycle in bicycles_left:
-            left_x, left_y = left_bicycle
-            closest_bicycle = None
-            min_dist = float('inf')
-
-            for right_bicycle in bicycles_right:
-                right_x, right_y = right_bicycle
-                # Check if the y-coordinates are similar
-                if abs(left_y - right_y) < self.y_threshold:
-                    # Calculate the distance (disparity)
-                    dist = abs(left_x - right_x)
-                    if dist < min_dist:
-                        min_dist = dist
-                        closest_bicycle = right_bicycle
-
-            # If a match was found, calculate depth and add to list
-            if closest_bicycle:
-                right_x, _ = closest_bicycle
-                disparity = abs(left_x - right_x)
-                depth = (self.focal_length * self.baseline) / disparity if disparity != 0 else float('inf')
-                self.matched_bicycles_with_distances.append((left_bicycle, depth))
-
-        return self.matched_bicycles_with_distances
-    
-    def camera_callback(self, image,data_dict):
-        data_dict['image'] = np.reshape(np.copy(image.raw_data),(image.height,image.width,4))
-
-
-    
     def __str__(self):
-        mylist = [round(x.item(), 2) for x in self.objectreturn]
-        return f"These are the return values: Speed: %s, Distance %s, Throttle: %s, Brake: %s" % tuple(mylist)
+        v = [round(x.item(), 3) for x in self.objectreturn]
+        return (f"Speed_norm={v[0]}, Dist_norm={v[1]}, Delta={v[2]}, "
+                f"Err={v[3]}, SafeBrake={v[4]}, Det={v[5]}")

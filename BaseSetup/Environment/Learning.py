@@ -1,84 +1,73 @@
-
 from RLAlgorithm import ActorCriticAgent, DDPGAgent, PPOAgent
 from Environment import EnvironmentClass
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 
 
-def Learn(agent: ActorCriticAgent, carenv: EnvironmentClass, writer: SummaryWriter, VALIDATIONFREQ=5, EPISODE=100, ):
+def Learn(agent, carenv, writer, VALIDATIONFREQ=5, EPISODE=100):
+    """Training loop with contiguous MDP — RL controls every step.
 
-    hidden = None
-
-    EPISODE = EPISODE
+    No more PID/RL handoff.  Every step is an RL step, so the buffer
+    contains a proper contiguous trajectory for GAE.
+    """
     REWARDS = []
     TRAINING_STEP = 0
     VALIDATION_STEP = 0
 
     for episode in range(EPISODE):
-        if episode % VALIDATIONFREQ == 0 and episode != 0:
-            print("Validation Episode")
-        else:
-            print("Training Episode")
-        #Setup Initial State -> Here only just the done and terminated parameter
-        objectssata, reward, done, terminated, next_step = carenv.reset()
-        EPISODE_TOTAL_REWARD = 0
+        is_validation = (episode % VALIDATIONFREQ == 0 and episode != 0)
+        mode = "Validation" if is_validation else "Training"
+        print(f"\n=== {mode} Episode {episode} ===")
 
-        #Make a variable to check whether the episode ended or not
-        REACHED_GOAL = False
-        while REACHED_GOAL != True:
-            
-            if any(np.isnan(v) for v in objectssata):
-                print("NaN detected in observation: ", objectssata)
-                REACHED_GOAL = True
-                continue
+        observation, reward, done, terminated = carenv.reset()
+        EPISODE_TOTAL_REWARD = 0.0
+        step_count = 0
 
-            #Check if the model needs to make a prediction, or use the PID value
-            if next_step == 1:
-                action = agent.choose_action(objectssata)
-                BASE = False
-                returalues = carenv.step(action)
-            else:
-                BASE = True
-                returnvalues = carenv.step()
-            #This Branch is for when the car used the PID Controller, insted of the RL action.
-            #It is needed, because, We do not want to train on data, that was not used during simulation.
-            if BASE:
-                objectssata_, reward, done, terminated, next_step = returnvalues
-                if done == True:
-                    REACHED_GOAL = True
-                continue
-            #print(carenv)
-            objectssata_, reward, done, terminated, next_step = returnvalues
+        while not done:
+            # Check for NaN in observation
+            if any(np.isnan(v.item()) for v in observation):
+                print(f"NaN in observation at step {step_count}, aborting episode")
+                break
+
+            # RL always chooses the action (no more PID handoff)
+            action = agent.choose_action(observation, store=not is_validation)
+            observation_, reward, done, terminated = carenv.step(action, training=not is_validation)
+
             EPISODE_TOTAL_REWARD += reward
-            #If we will be here, that is where our modell will learn, here will be defined the learning sequence.
-            
+            step_count += 1
 
-            if episode % VALIDATIONFREQ == 0 and episode != 0:
+            if is_validation:
                 writer.add_scalar("Validation Step Reward", reward, VALIDATION_STEP)
-                agent.learn(objectssata, action, reward, objectssata_, done, TRAINING_STEP, Train = 0)
+                agent.learn(observation, action, reward, observation_, done,
+                            TRAINING_STEP, Train=0)
                 VALIDATION_STEP += 1
             else:
-                agent.learn(objectssata, action, reward, objectssata_, done, TRAINING_STEP, Train = 1)
+                agent.learn(observation, action, reward, observation_, done,
+                            TRAINING_STEP, Train=1)
                 writer.add_scalar("Training Step Reward", reward, TRAINING_STEP)
                 TRAINING_STEP += 1
-            writer.flush()
-            
-            objectssata = objectssata_
 
-            if done == True:
-                REACHED_GOAL = True
-                agent.reset_hidden()
-            
-        #print(f"Episode {episode}, Reward: {EPISODE_TOTAL_REWARD:.2f}")
-        if episode % VALIDATIONFREQ == 0 and episode != 0:
+            writer.flush()
+            observation = observation_
+
+        # Episode end
+        if is_validation:
             writer.add_scalar("Validation Episode Reward", EPISODE_TOTAL_REWARD, episode)
-            agent.save_models(str(EPISODE_TOTAL_REWARD))
+            writer.add_scalar("Validation Episode Steps", step_count, episode)
+            agent.save_models(str(round(EPISODE_TOTAL_REWARD, 2)))
         else:
-            print(EPISODE_TOTAL_REWARD)
             writer.add_scalar("Training Episode Reward", EPISODE_TOTAL_REWARD, episode)
-        
+            writer.add_scalar("Training Episode Steps", step_count, episode)
+
+        print(f"  Reward: {EPISODE_TOTAL_REWARD:.2f}  Steps: {step_count}")
         writer.flush()
         REWARDS.append(EPISODE_TOTAL_REWARD)
 
     carenv.cleanup()
     writer.close()
+
+    # Print summary
+    print(f"\n=== Training Summary ===")
+    print(f"Total episodes: {EPISODE}")
+    print(f"Mean reward (last 20): {np.mean(REWARDS[-20:]):.2f}")
+    print(f"Mean reward (all):     {np.mean(REWARDS):.2f}")
